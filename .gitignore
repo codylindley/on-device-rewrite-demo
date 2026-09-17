@@ -3,4 +3,6 @@ dist
 .sites-runtime
 *.local
 *.tsbuildinfo
+.test-dist
 .DS_Store
+.playwright-mcp

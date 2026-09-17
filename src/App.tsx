@@ -7,25 +7,30 @@ import {
   onMount,
 } from "solid-js";
 import { diffWords } from "./lib/diff";
-import type {
-  InferenceBackend,
-  RewriteAction,
-  WorkerRequest,
-  WorkerResponse,
+import {
+  isRewriteAction,
+  type InferenceBackend,
+  type RewriteAction,
+  type WorkerRequest,
+  type WorkerResponse,
 } from "./types";
 
 const ACTIONS: ReadonlyArray<{
   id: RewriteAction;
   label: string;
   shortLabel: string;
-  glyph: string;
 }> = [
-  { id: "grammar", label: "Fix grammar", shortLabel: "Grammar", glyph: "Aa" },
-  { id: "rewrite", label: "Rewrite", shortLabel: "Rewrite", glyph: "↻" },
-  { id: "concise", label: "Concise", shortLabel: "Concise", glyph: "−" },
-  { id: "professional", label: "Professional", shortLabel: "Professional", glyph: "◇" },
-  { id: "casual", label: "Casual", shortLabel: "Casual", glyph: "☺" },
+  {
+    id: "grammar",
+    label: "Fix spelling & grammar",
+    shortLabel: "Spelling & grammar",
+  },
+  { id: "concise", label: "Concise", shortLabel: "Concise" },
+  { id: "professional", label: "Professional", shortLabel: "Professional" },
 ];
+
+const PROOFREAD_ACTION = ACTIONS[0];
+const REWRITE_ACTIONS = ACTIONS.slice(1);
 
 const STARTER_TEXT =
   "Hey team, I wanted to check if we could maybe move tomorrows review a little later because I haven't finish the notes yet.";
@@ -43,6 +48,7 @@ interface RewriteResult {
   after: string;
   action: RewriteAction;
   attempt: number;
+  warnings: string[];
 }
 
 interface ActiveRequest {
@@ -63,18 +69,22 @@ function formatBytes(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024)} MB`;
 }
 
+interface EditingProgress {
+  completed: number;
+  total: number;
+}
+
 function friendlyError(message: string): string {
   if (/fetch|network|download|failed to load/i.test(message)) {
     return "The model download was interrupted. Check your connection and try again.";
   }
   if (/memory|allocation|out of bounds|runtime/i.test(message)) {
-    return "This device ran out of memory while loading the model. Close other tabs, then retry with the WASM fallback.";
+    return "This device ran out of memory while loading the model. Close other tabs and try again.";
+  }
+  if (/could not produce a usable edit|left unchanged|omitted too much|changed too much/i.test(message)) {
+    return "The local model could not produce a safe edit. Retry, or edit the difficult section separately.";
   }
   return "The local model could not finish this edit. You can retry without losing your text.";
-}
-
-function isRewriteAction(value: unknown): value is RewriteAction {
-  return typeof value === "string" && ACTIONS.some((action) => action.id === value);
 }
 
 export default function App() {
@@ -85,6 +95,7 @@ export default function App() {
   );
   const [progress, setProgress] = createSignal<number | null>(null);
   const [progressBytes, setProgressBytes] = createSignal<string | null>(null);
+  const [editingProgress, setEditingProgress] = createSignal<EditingProgress | null>(null);
   const [backend, setBackend] = createSignal<InferenceBackend | null>(null);
   const [activeAction, setActiveAction] = createSignal<RewriteAction | null>(null);
   const [result, setResult] = createSignal<RewriteResult | null>(null);
@@ -124,7 +135,9 @@ export default function App() {
       case "loading":
         return progress() === null ? "Loading the local model" : `Downloading · ${Math.round(progress() ?? 0)}%`;
       case "generating":
-        return `${activeActionLabel()} in progress`;
+        return editingProgress()?.total && editingProgress()!.total > 1
+          ? `${activeActionLabel()} · ${editingProgress()!.completed} of ${editingProgress()!.total}`
+          : `${activeActionLabel()} in progress`;
       case "ready":
         return "Model ready on this device";
       case "error":
@@ -153,6 +166,7 @@ export default function App() {
         if (message.phase === "generating") {
           setProgress(null);
           setProgressBytes(null);
+          setEditingProgress(null);
         }
         break;
       case "progress": {
@@ -163,6 +177,18 @@ export default function App() {
         }
         break;
       }
+      case "editing-progress":
+        setPhase("generating");
+        setEditingProgress({
+          completed: message.completed,
+          total: message.total,
+        });
+        setStatusText(
+          message.total > 1
+            ? `Editing section ${Math.min(message.completed + 1, message.total)} of ${message.total}…`
+            : "Editing locally on your device…",
+        );
+        break;
       case "backend":
         setBackend(message.backend);
         break;
@@ -181,12 +207,18 @@ export default function App() {
         setPhase("ready");
         setProgress(null);
         setProgressBytes(null);
-        setStatusText("This model is cached for faster edits during future visits.");
+        setEditingProgress(null);
+        setStatusText(
+          message.warnings.length
+            ? `Finished with ${message.warnings.length} section${message.warnings.length === 1 ? "" : "s"} left unchanged for safety.`
+            : "This model is cached for faster edits during future visits.",
+        );
         setResult({
           before: request.text,
           after: message.text,
           action: request.action,
           attempt: request.attempt,
+          warnings: message.warnings,
         });
         settlePending(undefined, message.text);
         queueMicrotask(() => resultHeading?.focus());
@@ -198,6 +230,7 @@ export default function App() {
         setPhase("error");
         setProgress(null);
         setProgressBytes(null);
+        setEditingProgress(null);
         setErrorDetails(message.message);
         setStatusText(friendlyError(message.message));
         settlePending(new Error(message.message));
@@ -233,7 +266,6 @@ export default function App() {
   ): Promise<string> {
     const trimmed = sourceText.trim();
     if (!trimmed) return Promise.reject(new Error("Add some text before choosing an edit."));
-    if (sourceText.length > 1200) return Promise.reject(new Error("Text must be 1,200 characters or fewer."));
     if (busy()) return Promise.reject(new Error("Another edit is already running."));
 
     const id = ++sequence;
@@ -252,6 +284,7 @@ export default function App() {
     setStatusText("Preparing the on-device editor…");
     setProgress(null);
     setProgressBytes(null);
+    setEditingProgress(null);
     setActiveAction(action);
     activeRequest = { id, text: sourceText, action, attempt };
 
@@ -272,6 +305,7 @@ export default function App() {
     setPhase("idle");
     setProgress(null);
     setProgressBytes(null);
+    setEditingProgress(null);
     setBackend(null);
     setActiveAction(null);
     setStatusText("Stopped. Any downloaded model files remain in the browser cache.");
@@ -285,7 +319,7 @@ export default function App() {
     setErrorDetails(null);
     if (phase() === "error") {
       setPhase("idle");
-      setStatusText("Your text stays here. Choose an edit whenever you are ready.");
+      setStatusText("Your text stays here. Choose an action whenever you are ready.");
     }
   }
 
@@ -324,16 +358,16 @@ export default function App() {
     const registration = context.registerTool(
       {
         name: "rewrite_text_on_device",
-        title: "Rewrite text on device",
+        title: "Improve text on device",
         description:
           "Stage an on-device grammar correction or rewrite in the visible preview. Use when the user wants to improve supplied text without uploading it to a server.",
         inputSchema: {
           type: "object",
           properties: {
-            text: { type: "string", minLength: 1, maxLength: 1200 },
+            text: { type: "string", minLength: 1 },
             action: {
               type: "string",
-              enum: ["grammar", "rewrite", "concise", "professional", "casual"],
+              enum: ["grammar", "concise", "professional"],
             },
           },
           required: ["text", "action"],
@@ -346,7 +380,6 @@ export default function App() {
           if (typeof candidate.text !== "string" || !candidate.text.trim()) {
             throw new TypeError("text must be a non-empty string.");
           }
-          if (candidate.text.length > 1200) throw new RangeError("text must be 1,200 characters or fewer.");
           if (!isRewriteAction(candidate.action)) throw new TypeError("action is not supported.");
 
           setText(candidate.text);
@@ -394,7 +427,7 @@ export default function App() {
           <div>
             <h1 id="page-title">Say it better.<br /><span>Keep it yours.</span></h1>
             <p class="intro-copy">
-              Rewrite in your browser. Your words stay on this device.
+              Polish your writing in your browser. Your words stay on this device.
             </p>
           </div>
         </section>
@@ -413,19 +446,25 @@ export default function App() {
             <span class="word-count">{wordCount()} words</span>
           </div>
 
-          <label class="sr-only" for="draft">Text to rewrite</label>
+          <label class="sr-only" for="draft">Text to improve</label>
+          <p class="input-guidance" id="draft-guidance">
+            Longer passages are edited section by section. Review every suggestion before replacing your text.
+          </p>
           <textarea
             ref={textarea}
             id="draft"
             value={text()}
             onInput={(event) => handleTextInput(event.currentTarget.value)}
-            maxlength="1200"
-            placeholder="Type or paste a short paragraph…"
+            aria-describedby="draft-guidance draft-limit"
+            placeholder="Type or paste the text you want to improve…"
           />
 
           <div class="editor-footer">
-            <span classList={{ "near-limit": text().length > 1050 }}>
-              {text().length} / 1,200
+            <span
+              id="draft-limit"
+              aria-live="polite"
+            >
+              {text().length.toLocaleString("en-US")} characters
             </span>
             <Show
               when={busy()}
@@ -442,22 +481,43 @@ export default function App() {
           </div>
 
           <div class="action-block">
-            <p class="action-label">Choose an edit</p>
-            <div class="action-grid">
-              <For each={ACTIONS}>
-                {(action) => (
-                  <button
-                    class="action-button"
-                    classList={{ "is-active": busy() && activeAction() === action.id }}
-                    type="button"
-                    disabled={!text().trim() || busy()}
-                    onClick={() => void startRewrite(action.id, text()).catch(() => undefined)}
-                  >
-                    <span class="action-glyph" aria-hidden="true">{action.glyph}</span>
-                    {action.label}
-                  </button>
-                )}
-              </For>
+            <p class="action-label">Choose what to change</p>
+            <div class="action-groups">
+              <fieldset class="action-group">
+                <legend>Correct</legend>
+                <button
+                  class="action-button"
+                  classList={{ "is-active": busy() && activeAction() === PROOFREAD_ACTION.id }}
+                  type="button"
+                  disabled={!text().trim() || busy()}
+                  onClick={() =>
+                    void startRewrite(PROOFREAD_ACTION.id, text()).catch(() => undefined)
+                  }
+                >
+                  {PROOFREAD_ACTION.label}
+                </button>
+              </fieldset>
+
+              <fieldset class="action-group">
+                <legend>Rewrite as</legend>
+                <div class="action-grid">
+                  <For each={REWRITE_ACTIONS}>
+                    {(action) => (
+                      <button
+                        class="action-button"
+                        classList={{ "is-active": busy() && activeAction() === action.id }}
+                        type="button"
+                        disabled={!text().trim() || busy()}
+                        onClick={() =>
+                          void startRewrite(action.id, text()).catch(() => undefined)
+                        }
+                      >
+                        {action.label}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </fieldset>
             </div>
           </div>
         </section>
@@ -504,6 +564,30 @@ export default function App() {
                       </div>
                     </div>
                   </Show>
+                  <Show when={editingProgress()?.total && editingProgress()!.total > 1}>
+                    <div
+                      class="progress-wrap"
+                      role="progressbar"
+                      aria-label="Text editing progress"
+                      aria-valuemin="0"
+                      aria-valuemax={editingProgress()!.total}
+                      aria-valuenow={editingProgress()!.completed}
+                    >
+                      <div class="progress-track">
+                        <span
+                          style={{
+                            width: `${Math.round(
+                              (editingProgress()!.completed / editingProgress()!.total) * 100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                      <div class="progress-meta">
+                        <span>{editingProgress()!.completed} of {editingProgress()!.total}</span>
+                        <span>sections</span>
+                      </div>
+                    </div>
+                  </Show>
                   <Show when={phase() === "error"}>
                     <div class="error-note" role="alert">
                       <span aria-hidden="true">!</span>
@@ -542,6 +626,19 @@ export default function App() {
                 <div class="suggestion-text" aria-label="Suggested text">
                   {candidate().after}
                 </div>
+
+                <Show when={candidate().warnings.length}>
+                  <details class="result-warning">
+                    <summary>
+                      {candidate().warnings.length} section{candidate().warnings.length === 1 ? "" : "s"} need review
+                    </summary>
+                    <ul>
+                      <For each={candidate().warnings}>
+                        {(warning) => <li>{warning}</li>}
+                      </For>
+                    </ul>
+                  </details>
+                </Show>
 
                 <div class="diff-heading">
                   <h3>Changes</h3>

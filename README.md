@@ -6,7 +6,9 @@ A small SolidJS + TypeScript demo of an on-device writing assistant. It runs a q
 
 ## What it includes
 
-- Fix grammar, Rewrite, Concise, Professional, and Casual actions
+- Fix spelling and grammar, rewrite concisely, and rewrite professionally
+- concise and professional rewrites also correct spelling, grammar, punctuation, and capitalization
+- paragraph-aware processing that breaks long passages into token-bounded local editing sections
 - lazy model download with byte and percentage progress
 - WebGPU detection with automatic WASM fallback
 - inference in a module Web Worker so the composer stays responsive
@@ -14,6 +16,8 @@ A small SolidJS + TypeScript demo of an on-device writing assistant. It runs a q
 - result preview with Replace, Retry, and Cancel
 - word-level insertion/deletion diff
 - output safeguards that reject rewrites which lose names, numbers, links, emoji, questions, or too much source meaning
+- tokenizer-aware output limits for complete corrections of longer passages
+- explicit errors when a generated edit is incomplete or changes too much instead of reporting a false no-change result
 - stale-result protection and a Stop action that terminates the worker
 - keyboard-friendly controls, live status, and responsive layout
 
@@ -30,6 +34,8 @@ Open the local URL printed by Vite, normally <http://127.0.0.1:5173>. Do not ope
 
 The first edit downloads model files from Hugging Face. Expect roughly 550–700 MB, depending on the selected backend and quantization. The browser caches those files, so later loads should be much faster. The download can take several minutes on a slower connection.
 
+The editor has no fixed character limit. Normal paragraphs are edited as units, while unusually large paragraphs are split into smaller token-bounded sections and processed sequentially. Long passages take proportionally longer. Any section that fails the preservation checks remains unchanged and is identified in the result for manual review.
+
 ## Build and preview the production bundle
 
 ```bash
@@ -45,12 +51,13 @@ Pushes to `main` are built and deployed to GitHub Pages by
 ## Model and runtime
 
 - Runtime: [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers)
+- Conservative grammar cleanup: [`harper.js`](https://www.npmjs.com/package/harper.js)
 - Model: [`onnx-community/Qwen3-0.6B-ONNX`](https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX)
 - WebGPU dtype: `q4f16` when shader-f16 is available, otherwise `q4`
 - WASM dtype: `q8`
 - Model license: Apache-2.0
 
-The 0.6B instruction model is the compatible local fallback used by Grammar Check SLM and supports all five editing modes with one model. The worker explicitly disables Qwen's thinking mode, uses deterministic generation for the first result and grammar retries, and adds a small amount of variation on stylistic retries.
+The 0.6B instruction model supports all three editing actions. The worker explicitly disables Qwen's thinking mode and uses copy-friendly deterministic decoding. It does not apply repetition or no-repeat-ngram penalties because those settings also penalize wording copied from the source text, which is counterproductive for editing.
 
 ## Privacy behavior
 

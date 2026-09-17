@@ -1,0 +1,23 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "outDir": "../.test-dist",
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": ".."
+  },
+  "include": [
+    "../src/lib/diff.ts",
+    "../src/lib/edit.ts",
+    "../src/lib/generation.ts",
+    "../src/lib/output.ts",
+    "../src/lib/proofread.ts",
+    "../src/lib/prompts.ts",
+    "../src/lib/sections.ts",
+    "../src/types.ts",
+    "./*.test.ts"
+  ]
+}
