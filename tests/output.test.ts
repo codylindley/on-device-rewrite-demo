@@ -109,3 +109,40 @@ test("rejects edits that reverse or remove critical semantic markers", () => {
     /negation/,
   );
 });
+
+test("accepts a concise edit that keeps negative meaning without an explicit negator", () => {
+  const source =
+    "Hey team, I wanted to check if we could maybe move tomorrows review a little later because I haven't finish the notes yet.";
+  assert.equal(
+    rejectedEditReason(
+      "concise",
+      source,
+      "Hey team, can we move tomorrow's review later? I'm still finishing the notes.",
+    ),
+    null,
+  );
+});
+
+test("still rejects a concise edit that flips the negation to a positive claim", () => {
+  const source =
+    "Hey team, I wanted to check if we could maybe move tomorrows review a little later because I haven't finish the notes yet.";
+  assert.match(
+    rejectedEditReason(
+      "concise",
+      source,
+      "Hey team, can we move tomorrow's review later? I have finished the notes.",
+    ) ?? "",
+    /negation/,
+  );
+});
+
+test("detects negations written without an apostrophe", () => {
+  assert.match(
+    rejectedEditReason(
+      "professional",
+      "We dont want to exceed the budget.",
+      "We want to exceed the budget.",
+    ) ?? "",
+    /negation/,
+  );
+});

@@ -163,9 +163,14 @@ export function rejectedEditReason(
     }
   }
   const negationPattern =
-    /\b(?:barely|cannot|hardly|never|no|nobody|none|not|nothing|without|won't|can't|isn't|wasn't|weren't|don't|doesn't|didn't|hasn't|haven't|hadn't|shouldn't|wouldn't|couldn't)\b/giu;
+    /\b(?:ain't|aren't|arent|barely|cannot|can't|cant|couldn't|couldnt|didn't|didnt|doesn't|doesnt|don't|dont|hadn't|hadnt|hardly|hasn't|hasnt|haven't|havent|isn't|isnt|neither|never|no|nobody|none|nor|not|nothing|nowhere|rarely|seldom|shouldn't|shouldnt|wasn't|wasnt|weren't|werent|without|won't|wont|wouldn't|wouldnt)\b/giu;
+  // A concise rewrite may carry the original negative meaning without an explicit
+  // negator, e.g. "I haven't finished" -> "I'm still finishing the notes".
+  const negativePolarityPattern =
+    /\b(?:awaiting|incomplete|lack|lacked|lacking|lacks|outstanding|pending|still|unable|unfinished|unresolved|yet)\b|\bin progress\b/giu;
   if ((source.match(negationPattern) ?? []).length > 0 &&
-      (candidate.match(negationPattern) ?? []).length === 0) {
+      (candidate.match(negationPattern) ?? []).length === 0 &&
+      (candidate.match(negativePolarityPattern) ?? []).length === 0) {
     return "the edit removed a negation";
   }
   const lowerCandidateWords = new Set(candidateWords);
