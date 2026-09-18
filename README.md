@@ -6,8 +6,8 @@ A small SolidJS + TypeScript demo of an on-device writing assistant. It runs a q
 
 ## What it includes
 
-- Fix spelling and grammar, rewrite concisely, and rewrite professionally
-- concise and professional rewrites also correct spelling, grammar, punctuation, and capitalization
+- Fix spelling and grammar; make text concise or longer; and rewrite it as casual, professional, confident, enthusiastic, or light-hearted
+- every rewrite mode also corrects spelling, grammar, punctuation, and capitalization
 - paragraph-aware processing that breaks long passages into token-bounded local editing sections
 - lazy model download with byte and percentage progress
 - WebGPU detection with automatic WASM fallback
@@ -57,7 +57,7 @@ Pushes to `main` are built and deployed to GitHub Pages by
 - WASM dtype: `q8`
 - Model license: Apache-2.0
 
-The 0.6B instruction model supports all three editing actions. The worker explicitly disables Qwen's thinking mode and uses copy-friendly deterministic decoding. It does not apply repetition or no-repeat-ngram penalties because those settings also penalize wording copied from the source text, which is counterproductive for editing.
+The 0.6B instruction model supports all eight editing actions. The worker explicitly disables Qwen's thinking mode and uses copy-friendly deterministic decoding. It does not apply repetition or no-repeat-ngram penalties because those settings also penalize wording copied from the source text, which is counterproductive for editing.
 
 ## Privacy behavior
 

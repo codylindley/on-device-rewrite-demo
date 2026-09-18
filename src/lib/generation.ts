@@ -12,9 +12,14 @@ export const EDIT_DECODING = {
   },
 } as const;
 
-export function getGenerationTokenBudget(sourceTokenCount: number): number {
+export function getGenerationTokenBudget(
+  sourceTokenCount: number,
+  expanding = false,
+): number {
+  const multiplier = expanding ? 2.5 : 1.5;
+  const buffer = expanding ? 64 : 48;
   return Math.min(
     MAX_GENERATED_TOKENS,
-    Math.max(MIN_GENERATED_TOKENS, Math.ceil(sourceTokenCount * 1.5) + 48),
+    Math.max(MIN_GENERATED_TOKENS, Math.ceil(sourceTokenCount * multiplier) + buffer),
   );
 }

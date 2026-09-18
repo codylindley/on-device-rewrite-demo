@@ -8,7 +8,10 @@ export function cleanEditOutput(output: string): string {
     .replace(/\s*```$/i, "")
     .replace(/^<text>\s*/i, "")
     .replace(/\s*<\/text>$/i, "")
-    .replace(/^(?:revised|rewritten|corrected|edited)\s+(?:text|version)\s*:\s*/i, "")
+    .replace(
+      /^(?:(?:revised|rewritten|corrected|edited)\s+(?:text|version)|(?:concise|longer|casual|professional|confident|enthusiastic|light[- ]hearted)(?:\s+(?:text|version))?)\s*:\s*/i,
+      "",
+    )
     .trim();
 
   if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
@@ -107,10 +110,23 @@ const semanticMarkers = [
   "minimum",
   "off",
   "outside",
+  "today",
+  "tomorrow",
+  "tonight",
+  "yesterday",
 ] as const;
 
 function wordCount(text: string, word: string): number {
-  return words(text).filter((candidate) => candidate === word).length;
+  return words(text).filter((candidate) =>
+    candidate === word || candidate === `${word}s` ||
+    candidate === `${word}'s` || candidate === `${word}’s`
+  ).length;
+}
+
+function addsNewCue(source: string, candidate: string, cues: readonly string[]): boolean {
+  const sourceText = source.toLowerCase();
+  const candidateText = candidate.toLowerCase();
+  return cues.some((cue) => candidateText.includes(cue) && !sourceText.includes(cue));
 }
 
 export function rejectedEditReason(
@@ -133,9 +149,38 @@ export function rejectedEditReason(
   if (action === "concise" && candidateWords.length > sourceWords.length) {
     return "the concise edit was longer than the original";
   }
+  if (action === "longer" && candidateWords.length <= sourceWords.length) {
+    return "the longer edit was not longer than the original";
+  }
+  if (action === "enthusiastic" &&
+      !((candidate.includes("!") && !source.includes("!")) || addsNewCue(source, candidate, [
+        "amazing", "delighted", "excited", "fantastic", "glad", "good news", "great",
+        "happy", "looking forward", "thrilled", "wonderful",
+      ]))) {
+    return "the enthusiastic edit did not sound enthusiastic";
+  }
+  if (action === "lighthearted" &&
+      !((/[—–]\s*\p{L}/u.test(candidate) && !/[—–]\s*\p{L}/u.test(source)) ||
+        addsNewCue(source, candidate, [
+          "breeze", "bright", "cheer", "friendly", "glad", "happily",
+          "smile", "spotlight", "sunny",
+        ]))) {
+    return "the light-hearted edit did not sound playful";
+  }
+  if (action === "lighthearted" &&
+      /\bplayful\s+(?:aside|observation|phrase)\b/iu.test(candidate) &&
+      !/\bplayful\s+(?:aside|observation|phrase)\b/iu.test(source)) {
+    return "the light-hearted edit returned a placeholder instead of edited text";
+  }
+  if (action === "lighthearted" &&
+      /\blet['’]?s\b/iu.test(candidate) && !/\blet['’]?s\b/iu.test(source)) {
+    return "the light-hearted edit introduced a new request or plan";
+  }
   const lengthRatio = candidate.length / Math.max(1, source.length);
-  if (!candidateWords.length || lengthRatio < (action === "concise" ? 0.12 : 0.35) ||
-      lengthRatio > 2.5) {
+  const minimumLengthRatio = action === "concise" ? 0.12 : action === "longer" ? 0.75 : 0.35;
+  const maximumLengthRatio = action === "longer" ? 3.5 : 2.5;
+  if (!candidateWords.length || lengthRatio < minimumLengthRatio ||
+      lengthRatio > maximumLengthRatio) {
     return "the edit changed too much of the section";
   }
   if (candidateWords.some((word) => word.length > 48 && !sourceWords.includes(word))) {
@@ -143,6 +188,9 @@ export function rejectedEditReason(
   }
   if (source.includes("?") && !candidate.includes("?")) {
     return "the edit removed a question";
+  }
+  if (action === "lighthearted" && !source.includes("?") && candidate.includes("?")) {
+    return "the edit introduced a question";
   }
 
   const numberTokens = (text: string) => text.match(/\b\d+(?:[.,:]\d+)*\b/gu) ?? [];
@@ -178,9 +226,24 @@ export function rejectedEditReason(
     return "the edit changed or removed a name";
   }
 
+  const personalPretence =
+    /\b(?:everyone|everybody|they|people|someone|somebody|anyone|anybody|nobody|he|she|we|you)\b[^.!?]{0,120}\bpretend(?:s|ed|ing)?\s+(?:as if|like)\s+there\s+(?:(?:a|an|the)\s+|some(?:\s+kind\s+of)?\s+)/iu;
+  const existentialPretence =
+    /\bpretend(?:s|ed|ing)?\s+(?:as if|like)\s+(?:there\s+(?:is|are)\b|there['’]s\b)/iu;
+  if (personalPretence.test(source) && existentialPretence.test(candidate)) {
+    return "the correction changed who the sentence describes";
+  }
+
   const originalContent = contentWords(source);
+  const minimumContentCoverage = action === "concise"
+    ? 0.5
+    : action === "lighthearted"
+      ? 0.45
+      : action === "casual" || action === "confident" || action === "enthusiastic"
+        ? 0.5
+        : 0.55;
   if (originalContent.length >= 4 &&
-      coverage(originalContent, contentWords(candidate)) < (action === "concise" ? 0.5 : 0.55)) {
+      coverage(originalContent, contentWords(candidate)) < minimumContentCoverage) {
     return "the edit omitted too much of the original content";
   }
   if (action === "grammar" && sourceWords.length > 3 &&

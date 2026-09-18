@@ -19,6 +19,22 @@ test("edits paragraph sections and preserves paragraph separators", async () => 
   assert.deepEqual(progress, [[0, 2], [1, 2], [2, 2]]);
 });
 
+test("edits grammar paragraphs one sentence at a time", async () => {
+  const generated: string[] = [];
+  const result = await editText({
+    action: "grammar",
+    text: "We was ready. They is waiting.",
+    countTokens: countWords,
+    generate: async (text) => {
+      generated.push(text);
+      return text === "We was ready." ? "We were ready." : "They are waiting.";
+    },
+  });
+
+  assert.deepEqual(generated, ["We was ready.", "They is waiting."]);
+  assert.equal(result.text, "We were ready. They are waiting.");
+});
+
 test("retries a rejected edit once", async () => {
   let calls = 0;
   const result = await editText({
@@ -49,6 +65,20 @@ test("keeps an unsafe section unchanged and reports it", async () => {
   assert.match(result.warnings[0], /Section 2 was left unchanged/);
 });
 
+test("falls back to grammar when a style rewrite is unsafe", async () => {
+  const result = await editText({
+    action: "professional",
+    text: "We was ready.",
+    countTokens: countWords,
+    generate: async () => "Sure: I can help.",
+    fallback: async () => "We were ready.",
+  });
+
+  assert.equal(result.text, "We were ready.");
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /only spelling and grammar were corrected/);
+});
+
 test("fails explicitly when every section is unsafe", async () => {
   await assert.rejects(
     editText({
@@ -61,9 +91,9 @@ test("fails explicitly when every section is unsafe", async () => {
   );
 });
 
-test("falls back to individual sentences when a paragraph is unchanged", async () => {
+test("falls back to individual sentences for a rejected style rewrite", async () => {
   const result = await editText({
-    action: "grammar",
+    action: "professional",
     text: "We was ready. They is waiting.",
     countTokens: countWords,
     generate: async (text) => {

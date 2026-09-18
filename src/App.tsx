@@ -8,6 +8,7 @@ import {
 } from "solid-js";
 import { diffWords } from "./lib/diff";
 import {
+  EDIT_ACTIONS,
   isRewriteAction,
   type InferenceBackend,
   type RewriteAction,
@@ -15,22 +16,36 @@ import {
   type WorkerResponse,
 } from "./types";
 
-const ACTIONS: ReadonlyArray<{
+interface ActionOption {
   id: RewriteAction;
   label: string;
   shortLabel: string;
-}> = [
-  {
-    id: "grammar",
-    label: "Fix spelling & grammar",
-    shortLabel: "Spelling & grammar",
-  },
+}
+
+const PROOFREAD_ACTION: ActionOption = {
+  id: "grammar",
+  label: "Fix spelling & grammar",
+  shortLabel: "Spelling & grammar",
+};
+
+const LENGTH_ACTIONS: ReadonlyArray<ActionOption> = [
   { id: "concise", label: "Concise", shortLabel: "Concise" },
-  { id: "professional", label: "Professional", shortLabel: "Professional" },
+  { id: "longer", label: "Longer", shortLabel: "Longer" },
 ];
 
-const PROOFREAD_ACTION = ACTIONS[0];
-const REWRITE_ACTIONS = ACTIONS.slice(1);
+const TONE_ACTIONS: ReadonlyArray<ActionOption> = [
+  { id: "casual", label: "Casual", shortLabel: "Casual" },
+  { id: "professional", label: "Professional", shortLabel: "Professional" },
+  { id: "confident", label: "Confident", shortLabel: "Confident" },
+  { id: "enthusiastic", label: "Enthusiastic", shortLabel: "Enthusiastic" },
+  { id: "lighthearted", label: "Light-hearted", shortLabel: "Light-hearted" },
+];
+
+const ACTIONS: ReadonlyArray<ActionOption> = [
+  PROOFREAD_ACTION,
+  ...LENGTH_ACTIONS,
+  ...TONE_ACTIONS,
+];
 
 const STARTER_TEXT =
   "Hey team, I wanted to check if we could maybe move tomorrows review a little later because I haven't finish the notes yet.";
@@ -367,7 +382,7 @@ export default function App() {
             text: { type: "string", minLength: 1 },
             action: {
               type: "string",
-              enum: ["grammar", "concise", "professional"],
+              enum: [...EDIT_ACTIONS],
             },
           },
           required: ["text", "action"],
@@ -446,78 +461,104 @@ export default function App() {
             <span class="word-count">{wordCount()} words</span>
           </div>
 
-          <label class="sr-only" for="draft">Text to improve</label>
-          <p class="input-guidance" id="draft-guidance">
-            Longer passages are edited section by section. Review every suggestion before replacing your text.
-          </p>
-          <textarea
-            ref={textarea}
-            id="draft"
-            value={text()}
-            onInput={(event) => handleTextInput(event.currentTarget.value)}
-            aria-describedby="draft-guidance draft-limit"
-            placeholder="Type or paste the text you want to improve…"
-          />
+          <div class="editor-layout">
+            <div class="draft-column">
+              <label class="sr-only" for="draft">Text to improve</label>
+              <p class="input-guidance" id="draft-guidance">
+                Longer passages are edited section by section. Review every suggestion before replacing your text.
+              </p>
+              <textarea
+                ref={textarea}
+                id="draft"
+                value={text()}
+                onInput={(event) => handleTextInput(event.currentTarget.value)}
+                aria-describedby="draft-guidance draft-limit"
+                placeholder="Type or paste the text you want to improve…"
+              />
 
-          <div class="editor-footer">
-            <span
-              id="draft-limit"
-              aria-live="polite"
-            >
-              {text().length.toLocaleString("en-US")} characters
-            </span>
-            <Show
-              when={busy()}
-              fallback={
-                <button class="clear-button" type="button" onClick={clearText} disabled={!text()}>
-                  Clear
-                </button>
-              }
-            >
-              <button class="stop-button" type="button" onClick={() => stopWork()}>
-                Stop edit
-              </button>
-            </Show>
-          </div>
-
-          <div class="action-block">
-            <p class="action-label">Choose what to change</p>
-            <div class="action-groups">
-              <fieldset class="action-group">
-                <legend>Correct</legend>
-                <button
-                  class="action-button"
-                  classList={{ "is-active": busy() && activeAction() === PROOFREAD_ACTION.id }}
-                  type="button"
-                  disabled={!text().trim() || busy()}
-                  onClick={() =>
-                    void startRewrite(PROOFREAD_ACTION.id, text()).catch(() => undefined)
+              <div class="editor-footer">
+                <span
+                  id="draft-limit"
+                  aria-live="polite"
+                >
+                  {text().length.toLocaleString("en-US")} characters
+                </span>
+                <Show
+                  when={busy()}
+                  fallback={
+                    <button class="clear-button" type="button" onClick={clearText} disabled={!text()}>
+                      Clear
+                    </button>
                   }
                 >
-                  {PROOFREAD_ACTION.label}
-                </button>
-              </fieldset>
+                  <button class="stop-button" type="button" onClick={() => stopWork()}>
+                    Stop edit
+                  </button>
+                </Show>
+              </div>
+            </div>
 
-              <fieldset class="action-group">
-                <legend>Rewrite as</legend>
-                <div class="action-grid">
-                  <For each={REWRITE_ACTIONS}>
-                    {(action) => (
-                      <button
-                        class="action-button"
-                        classList={{ "is-active": busy() && activeAction() === action.id }}
-                        type="button"
-                        disabled={!text().trim() || busy()}
-                        onClick={() =>
-                          void startRewrite(action.id, text()).catch(() => undefined)
-                        }
-                      >
-                        {action.label}
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </fieldset>
+            <div class="action-block">
+              <p class="action-label">Choose what to change</p>
+              <p class="action-note">Every option also checks spelling and grammar.</p>
+              <div class="action-groups">
+                <fieldset class="action-group">
+                  <legend>Correct</legend>
+                  <button
+                    class="action-button"
+                    classList={{ "is-active": busy() && activeAction() === PROOFREAD_ACTION.id }}
+                    type="button"
+                    disabled={!text().trim() || busy()}
+                    onClick={() =>
+                      void startRewrite(PROOFREAD_ACTION.id, text()).catch(() => undefined)
+                    }
+                  >
+                    {PROOFREAD_ACTION.label}
+                  </button>
+                </fieldset>
+
+                <fieldset class="action-group">
+                  <legend>Make it</legend>
+                  <div class="action-grid">
+                    <For each={LENGTH_ACTIONS}>
+                      {(action) => (
+                        <button
+                          class="action-button"
+                          classList={{ "is-active": busy() && activeAction() === action.id }}
+                          type="button"
+                          disabled={!text().trim() || busy()}
+                          onClick={() =>
+                            void startRewrite(action.id, text()).catch(() => undefined)
+                          }
+                        >
+                          {action.label}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </fieldset>
+
+                <fieldset class="action-group action-group-wide">
+                  <legend>Make it sound</legend>
+                  <div class="action-grid tone-grid">
+                    <For each={TONE_ACTIONS}>
+                      {(action) => (
+                        <button
+                          class="action-button"
+                          classList={{ "is-active": busy() && activeAction() === action.id }}
+                          type="button"
+                          disabled={!text().trim() || busy()}
+                          onClick={() =>
+                            void startRewrite(action.id, text()).catch(() => undefined)
+                          }
+                        >
+                          {action.label}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </fieldset>
+              </div>
             </div>
           </div>
         </section>
@@ -527,12 +568,6 @@ export default function App() {
             when={result()}
             fallback={
               <>
-                <div class="engine-visual" classList={{ "is-working": busy() }} aria-hidden="true">
-                  <span>{busy() ? "PROCESSING" : "LOCAL"}</span>
-                  <div class="orbit orbit-one" />
-                  <div class="orbit orbit-two" />
-                  <div class="core">{busy() ? <span class="spinner" /> : "AI"}</div>
-                </div>
                 <div class="engine-copy">
                   <div class="engine-title-row">
                     <div>
@@ -608,6 +643,12 @@ export default function App() {
                   <div><dt>Acceleration</dt><dd>WebGPU → WASM</dd></div>
                   <div><dt>Network</dt><dd>Model files only</dd></div>
                 </dl>
+                <div class="engine-visual" classList={{ "is-working": busy() }} aria-hidden="true">
+                  <span>{busy() ? "PROCESSING" : "LOCAL"}</span>
+                  <div class="orbit orbit-one" />
+                  <div class="orbit orbit-two" />
+                  <div class="core">{busy() ? <span class="spinner" /> : "AI"}</div>
+                </div>
               </>
             }
           >

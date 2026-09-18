@@ -1,4 +1,13 @@
-export const EDIT_ACTIONS = ["grammar", "concise", "professional"] as const;
+export const EDIT_ACTIONS = [
+  "grammar",
+  "concise",
+  "longer",
+  "casual",
+  "professional",
+  "confident",
+  "enthusiastic",
+  "lighthearted",
+] as const;
 
 export type RewriteAction = (typeof EDIT_ACTIONS)[number];
 

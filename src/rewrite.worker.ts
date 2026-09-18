@@ -158,6 +158,33 @@ async function rewrite(request: WorkerRequest) {
 
   const countTokens = (text: string) =>
     model.tokenizer.encode(text, { add_special_tokens: false }).length;
+  const generateForAction = async (
+    action: WorkerRequest["action"],
+    text: string,
+    retry: boolean,
+    includeRequestAttempt: boolean,
+  ) => {
+    const promptRetry = retry || (includeRequestAttempt && request.attempt > 0);
+    const creativeAction = action === "enthusiastic" || action === "lighthearted";
+    const varyRetry = promptRetry && action !== "grammar";
+    const sample = creativeAction || varyRetry;
+    const output = await model(makeEditMessages(action, text, promptRetry), {
+      ...EDIT_DECODING,
+      max_new_tokens: getGenerationTokenBudget(
+        countTokens(text),
+        action === "longer",
+      ),
+      do_sample: sample,
+      temperature: sample ? (creativeAction ? 0.45 : 0.35) : undefined,
+      top_p: sample ? 0.9 : undefined,
+    });
+    const generated = output[0]?.generated_text;
+    const rawText = typeof generated === "string"
+      ? generated
+      : generated?.at(-1)?.content;
+    if (typeof rawText !== "string") return "";
+    return applyConservativeProofreading(rawText, proofreader);
+  };
   const result = await editText({
     action: request.action,
     text: request.text,
@@ -166,21 +193,11 @@ async function rewrite(request: WorkerRequest) {
       post({ type: "editing-progress", id: request.id, completed, total });
     },
     async generate(text, retry) {
-      const varyRetry = request.attempt > 0 && request.action !== "grammar";
-      const output = await model(makeEditMessages(request.action, text, retry || request.attempt > 0), {
-        ...EDIT_DECODING,
-        max_new_tokens: getGenerationTokenBudget(countTokens(text)),
-        do_sample: varyRetry,
-        temperature: varyRetry ? 0.35 : undefined,
-        top_p: varyRetry ? 0.9 : undefined,
-      });
-      const generated = output[0]?.generated_text;
-      const rawText = typeof generated === "string"
-        ? generated
-        : generated?.at(-1)?.content;
-      if (typeof rawText !== "string") return "";
-      return applyConservativeProofreading(rawText, proofreader);
+      return generateForAction(request.action, text, retry, true);
     },
+    fallback: request.action === "grammar"
+      ? undefined
+      : (text) => generateForAction("grammar", text, false, false),
   });
 
   post({ type: "result", id: request.id, ...result, backend });

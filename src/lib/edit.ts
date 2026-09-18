@@ -12,6 +12,7 @@ interface EditOptions {
   text: string;
   countTokens(text: string): number;
   generate(text: string, retry: boolean): Promise<string>;
+  fallback?(text: string): Promise<string>;
   onProgress?(completed: number, total: number): void;
 }
 
@@ -20,11 +21,20 @@ export async function editText({
   text,
   countTokens,
   generate,
+  fallback,
   onProgress,
 }: EditOptions): Promise<EditResult> {
   if (!text.trim()) throw new Error("Add some text before choosing an edit.");
 
-  const sections = splitIntoSections(text, countTokens);
+  const paragraphSections = splitIntoSections(text, countTokens);
+  // The small local model is more reliable at contextual spelling and grammar
+  // when it can focus on one sentence at a time. Other rewrite modes keep the
+  // larger paragraph context so tone and length stay coherent.
+  const sections = action === "grammar"
+    ? paragraphSections.flatMap((section) =>
+        section.editable ? splitIntoSentences(section.text) : [section]
+      )
+    : paragraphSections;
   const total = sections.filter((section) => section.editable).length;
   const result: string[] = [];
   const warnings: string[] = [];
@@ -62,6 +72,26 @@ export async function editText({
         return {
           text: sentenceResults.map((item) => item.text).join(""),
           warnings: sentenceWarnings,
+        };
+      }
+    }
+
+    if (fallback) {
+      const fallbackCandidate = normalizeEditOutput(
+        await fallback(section.text),
+        section.text,
+      );
+      const fallbackRejection = rejectedEditReason(
+        "grammar",
+        section.text,
+        fallbackCandidate,
+      );
+      if (!fallbackRejection) {
+        return {
+          text: fallbackCandidate,
+          warnings: [
+            "the requested rewrite could not be applied safely, so only spelling and grammar were corrected",
+          ],
         };
       }
     }

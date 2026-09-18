@@ -20,3 +20,29 @@ test("applies high-confidence grammar cleanup without applying style suggestions
     await linter.dispose();
   }
 });
+
+test("applies safe boundary and contextual their/there corrections", async () => {
+  const linter = new LocalLinter({ binary, dialect: Dialect.American });
+  try {
+    assert.equal(
+      await applyConservativeProofreading(
+        "Their are alot of reasons, but their report is ready.",
+        linter,
+      ),
+      "There are a lot of reasons, but their report is ready.",
+    );
+    assert.equal(
+      await applyConservativeProofreading(
+        "Remember when your suppose to leave, when you suppose to return, and to right their own essays.",
+        linter,
+      ),
+      "Remember when you're supposed to leave, when you're supposed to return, and to write their own essays.",
+    );
+    assert.equal(
+      await applyConservativeProofreading("Your proposal is ready.", linter),
+      "Your proposal is ready.",
+    );
+  } finally {
+    await linter.dispose();
+  }
+});
