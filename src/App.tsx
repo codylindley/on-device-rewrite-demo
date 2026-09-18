@@ -699,7 +699,6 @@ export default function App() {
         <div class="comparison-grid"><For each={PANES}>{(pane) => <Panel pane={pane} />}</For></div>
       </main>
       <footer class="site-footer">
-        <p>Engine outputs are never merged with each other or written back into your input. Your text stays in this tab; model weights download only after you approve them.</p>
         <p class="footer-credit">
           Built by <a href="https://codylindley.com" target="_blank" rel="noopener noreferrer">Cody Lindley<span class="visually-hidden"> (opens in a new tab)</span></a>
           <span aria-hidden="true"> · </span>

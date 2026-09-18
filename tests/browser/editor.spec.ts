@@ -550,6 +550,7 @@ test("the footer credits the author and links to the source without losing the p
   // The separator is decoration, so it must not reach the accessibility tree.
   await expect(credit.locator("[aria-hidden='true']")).toHaveText("·");
 
-  // A shorthand `margin` on the footer paragraphs silently outranks this, collapsing the separation.
-  expect(await credit.evaluate((element) => getComputedStyle(element).marginTop)).not.toBe("0px");
+  // The header already carries the privacy claim, so the footer must not repeat it.
+  await expect(page.locator(".privacy-pill")).toHaveText("Your text never leaves this tab");
+  await expect(page.locator(".site-footer")).not.toContainText("stays in this tab");
 });

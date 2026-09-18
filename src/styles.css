@@ -299,8 +299,7 @@ details p { color: var(--muted); }
 .diff-block ins { color: #075f45; background: #d9f8ec; text-underline-offset: 2px; }
 .diff-block del { color: #8e2431; background: #ffe6e9; }
 .site-footer { padding-block: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.74rem; text-align: center; line-height: 1.6; }
-.site-footer p { max-width: 86ch; margin: 0 auto; text-wrap: pretty; }
-.site-footer .footer-credit { margin-top: 10px; }
+.site-footer p { margin: 0; }
 .footer-credit a { color: var(--muted); text-decoration-color: var(--line); }
 .footer-credit a:hover { color: var(--blue); text-decoration-color: currentColor; }
 .visually-hidden {
