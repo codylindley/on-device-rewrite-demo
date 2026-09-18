@@ -81,12 +81,16 @@ The optional WebMCP tool requires an explicit `engine` (`harper`, `coedit`, or `
 ## Verification and local experiments
 
 ```bash
+npm run check
 npm run unit-tests
 npm run build
 npm run browser-tests
+npm run verify-pages-build
 ```
 
-Browser tests use an isolated installed Google Chrome and do not download AI weights. Build before running them.
+`check` is a types-only pass, so it is the fastest way to catch a mistake. Browser tests use an isolated installed Google Chrome and do not download AI weights. Build before running them, because they run against `dist` rather than the dev server.
+
+`verify-pages-build` exists because the tests and the deploy do not build the same way. Locally the site is served from `/`, while GitHub Pages builds with `--base` set to the repository path. If an asset reference is not rewritten to that base, the deployed page still returns HTTP 200 and simply 404s every asset, so the site goes blank with nothing failing anywhere. The script rebuilds the way Pages does, into a throwaway directory, and asserts every referenced asset resolves under the base. The deploy workflow runs it before publishing.
 
 The synthetic corpus in `benchmarks/grammar-corpus.json` contains 120 cases: clean text, annotated errors, and protected/adversarial examples, with development/held-out splits. The scorer treats copying erroneous input as a failure to correct it and keeps rejections, runtime failures, and produced outputs separate. Exact reference matches are not a grammar-accuracy or meaning-preservation score.
 

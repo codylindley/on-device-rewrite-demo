@@ -35,6 +35,9 @@ jobs:
         id: pages
         uses: actions/configure-pages@v6
 
+      - name: Verify assets resolve under the Pages base path
+        run: node scripts/verify-pages-build.mjs "${{ steps.pages.outputs.base_path }}/"
+
       - name: Build
         run: npm run build -- --base="${{ steps.pages.outputs.base_path }}/"
 

@@ -8,3 +8,4 @@ dist
 .playwright-mcp
 playwright-report
 test-results
+.pages-check

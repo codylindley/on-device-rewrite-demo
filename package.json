@@ -10,7 +10,8 @@
     "check": "tsc -b --pretty false",
     "unit-tests": "node tests/run-unit-tests.mjs && node --test benchmarks/score.test.mjs",
     "browser-tests": "playwright test",
-    "benchmark:grammar": "node scripts/benchmark-grammar.mjs"
+    "benchmark:grammar": "node scripts/benchmark-grammar.mjs",
+    "verify-pages-build": "node scripts/verify-pages-build.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
