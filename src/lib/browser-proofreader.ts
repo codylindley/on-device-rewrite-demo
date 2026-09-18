@@ -6,6 +6,8 @@ import {
 } from "harper.js";
 import harperWasmUrl from "../../node_modules/harper.js/dist/harper_wasm_bg.wasm?url";
 
+export const harperAssetUrl = harperWasmUrl;
+
 let linterPromise: Promise<Linter> | null = null;
 
 export function getLocalProofreader(): Promise<Linter> {

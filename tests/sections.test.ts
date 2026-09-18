@@ -47,3 +47,20 @@ test("preserves whitespace while splitting a paragraph into sentences", () => {
     ["First sentence.", "Second sentence."],
   );
 });
+
+test("sentence segmentation never splits a URL query or case-sensitive path", () => {
+  const first = 'Open "https://example.test/Reports/Q3?Team=Blue&Token=AbC#Summary" after you log in.';
+  const second = " Next sentence.";
+  const sections = splitIntoSentences(first + second);
+  assert.equal(sections.map(({ text }) => text).join(""), first + second);
+  assert.deepEqual(sections.filter(({ editable }) => editable).map(({ text }) => text), [first, second.trim()]);
+});
+
+test("an oversized URL is copied as a protected section rather than split into editable fragments", () => {
+  const url = `https://example.test/Report?Token=${"AbCd1234".repeat(12)}`;
+  const source = `See "${url}" before tomorrow.`;
+  const sections = splitIntoSections(source, (value) => value.length, 40);
+  assert.equal(sections.map(({ text }) => text).join(""), source);
+  assert.ok(sections.some(({ text, editable }) => !editable && text.includes(url)));
+  assert.ok(sections.filter(({ editable }) => editable).every(({ text }) => text.length <= 40));
+});

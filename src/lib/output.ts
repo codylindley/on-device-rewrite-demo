@@ -1,4 +1,5 @@
 import type { RewriteAction } from "../types.ts";
+import { linkPattern } from "./links.ts";
 
 export function cleanEditOutput(output: string): string {
   let cleaned = output
@@ -86,14 +87,48 @@ function contentWords(text: string): string[] {
     .map((word) => word.replace(/['’]/gu, "").replace(/(?<=.{4})(?:ing|ed|s)$/u, ""));
 }
 
+function sameItems(source: string[], candidate: string[]): boolean {
+  return source.length === candidate.length &&
+    (!source.length || coverage(source, candidate) === 1);
+}
+
+function numbers(text: string): string[] {
+  return (text.match(
+    /(?:[+−-]\s*)?(?:\p{Sc}\s*)?(?:[+−-]\s*)?(?:\p{Nd}+(?:[.,:/-]\p{Nd}+)*|[.,]\p{Nd}+)(?:[eE][+−-]?\p{Nd}+)?(?:\s*(?:[%‰‱]|\p{Sc}|(?:hundred|thousand|million|billion|trillion|[kmbt])\b))?/giu,
+  ) ?? []).map((number) => number.replace(/\s+/gu, ""));
+}
+
 function links(text: string): string[] {
-  return (text.match(/(?:https?:\/\/|www\.)[^\s<>"“”]+/giu) ?? [])
-    .map((link) => link.replace(/[.,;:!?]+$/u, "").toLowerCase());
+  return (text.match(linkPattern) ?? [])
+    .map((link) => {
+      const parts = link.match(/^(https?:\/\/)?([^/?#]+)(.*)$/iu);
+      if (!parts) return link;
+      const [, scheme = "", authority, resource] = parts;
+      const userInfoEnd = authority.lastIndexOf("@") + 1;
+      // Paths, queries, fragments, credentials, and ambiguous trailing punctuation
+      // are case-sensitive data; only the scheme and host can change case.
+      return scheme.toLowerCase() + authority.slice(0, userInfoEnd) +
+        authority.slice(userInfoEnd).toLowerCase() + resource;
+    });
+}
+
+export function rejectedStructuredFactReason(source: string, candidate: string): string | null {
+  if (!sameItems(numbers(source), numbers(candidate))) {
+    return "the edit added, changed, removed, or repeated a number";
+  }
+  if (!sameItems(links(source), links(candidate))) {
+    return "the edit added, changed, removed, or repeated a link";
+  }
+  return null;
 }
 
 function capitalizedTerms(text: string): string[] {
-  return (text.match(/\b\p{Lu}[\p{L}\p{M}'’.-]{2,}\b/gu) ?? [])
-    .filter((word) => !sentenceStarters.has(word.toLowerCase()));
+  return (text.replace(linkPattern, "").match(/\b\p{Lu}[\p{L}\p{M}'’.-]{2,}\b/gu) ?? [])
+    .filter((word) => {
+      const normalized = word.toLowerCase().replace(/’/gu, "'");
+      return !sentenceStarters.has(normalized.replace(/'(?:m|re|ve|ll|d|s)$/u, "")) &&
+        !negativeContractions.has(normalized);
+    });
 }
 
 const semanticMarkers = [
@@ -129,13 +164,126 @@ function addsNewCue(source: string, candidate: string, cues: readonly string[]):
   return cues.some((cue) => candidateText.includes(cue) && !sourceText.includes(cue));
 }
 
+const negativeContractions = new Set([
+  "ain't", "aren't", "can't", "couldn't", "didn't", "doesn't", "don't",
+  "hadn't", "hasn't", "haven't", "isn't", "mustn't", "needn't", "shan't",
+  "shouldn't", "wasn't", "weren't", "won't", "wouldn't",
+].flatMap((word) => [word, word.replace("'", "")]));
+
+const negativeWords = new Set([
+  "barely", "hardly", "neither", "never", "no", "nobody", "none", "nor",
+  "not", "nothing", "nowhere", "rarely", "seldom", "without",
+]);
+
+const anchorNoise = new Set([
+  "a", "an", "the", "am", "is", "are", "was", "were", "be", "been", "being",
+  "do", "does", "did", "have", "has", "had", "can", "could", "will", "would",
+  "shall", "should", "must", "may", "might", "to", "of", "for", "in", "on",
+  "at", "by", "with", "as", "please", "itself", "myself", "yourself",
+  "ourselves", "themselves", "himself", "herself", "yet",
+]);
+
+const irregularAnchors: Record<string, string> = {
+  went: "go", gone: "go", goes: "go", going: "go",
+  saw: "see", seen: "see", sees: "see", seeing: "see",
+  began: "begin", begun: "begin", begins: "begin", beginning: "begin",
+};
+
+function anchor(word: string): string {
+  if (irregularAnchors[word]) return irregularAnchors[word];
+  let stem = word.replace(/'(?:m|re|ve|ll|d|s)$/u, "");
+  if (stem.length > 4) {
+    if (/(?:ied|ies)$/u.test(stem)) stem = stem.slice(0, -3) + "y";
+    else if (/(?:ing|ed)$/u.test(stem)) {
+      stem = stem.replace(/(?:ing|ed)$/u, "").replace(/([b-df-hj-np-tv-z])\1$/u, "$1");
+    } else if (/(?:ches|shes|xes|zes|sses)$/u.test(stem)) stem = stem.slice(0, -2);
+    else if (/[^s]s$/u.test(stem)) stem = stem.slice(0, -1);
+  }
+  return stem.length > 3 ? stem.replace(/e$/u, "") : stem;
+}
+
+interface NegativeScope {
+  marker: string;
+  before: string[];
+  after: string[];
+  unfinished: boolean;
+}
+
+function negativeScopes(text: string, implicitCompletion = false): NegativeScope[] {
+  const scopes: NegativeScope[] = [];
+  // These local anchors are conservative evidence, not a semantic proof. Keeping
+  // both sides prevents a negator elsewhere in a passage from masking a reversal.
+  const clauses = text.split(/[.!?;,\r\n…]+|[—–]|\b(?:but|because|although|though|while|whereas)\b/giu);
+  for (const clause of clauses) {
+    const tokens = words(clause).map((word) => word.replace(/’/gu, "'"));
+    const anchors = (values: string[]) =>
+      values.filter((word) => !anchorNoise.has(word)).map((word) =>
+        negativeContractions.has(word) || word === "cannot" ? "not" : anchor(word)
+      );
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const completion = implicitCompletion && token === "still" &&
+        /^(?:finishing|completing)$/u.test(tokens[index + 1] ?? "");
+      const marker = completion || negativeContractions.has(token) || token === "cannot"
+        ? "not"
+        : negativeWords.has(token) ? token : null;
+      if (!marker || (implicitCompletion && !completion)) continue;
+      const after = anchors(tokens.slice(index + 1));
+      scopes.push({
+        marker,
+        before: anchors(tokens.slice(0, index)),
+        after,
+        unfinished: marker === "not" &&
+          /^(?:finish|complet)$/u.test(after[0] ?? "") &&
+          (/^(?:haven't|havent|hasn't|hasnt)$/u.test(token) ||
+            (token === "not" && /^(?:have|has)$/u.test(tokens[index - 1] ?? ""))),
+      });
+    }
+  }
+  return scopes;
+}
+
+function sameScope(source: NegativeScope, candidate: NegativeScope): boolean {
+  return source.marker === candidate.marker &&
+    source.before.join(" ") === candidate.before.join(" ") &&
+    source.after.join(" ") === candidate.after.join(" ");
+}
+
+function rejectedNegationReason(
+  action: RewriteAction,
+  source: string,
+  candidate: string,
+): string | null {
+  const original = negativeScopes(source);
+  const remaining = negativeScopes(candidate);
+  const completions = action === "concise" ? negativeScopes(candidate, true) : [];
+  for (const scope of original) {
+    const match = remaining.findIndex((other) => sameScope(scope, other));
+    if (match >= 0) {
+      remaining.splice(match, 1);
+      continue;
+    }
+    const completion = scope.unfinished
+      ? completions.findIndex((other) => sameScope(scope, other))
+      : -1;
+    if (completion >= 0) {
+      completions.splice(completion, 1);
+      continue;
+    }
+    return "the edit removed or changed the scope of a negation";
+  }
+  return remaining.length ? "the edit added or changed the scope of a negation" : null;
+}
+
 export function rejectedEditReason(
   action: RewriteAction,
   source: string,
   candidate: string,
 ): string | null {
   if (!candidate.trim()) return "the model returned no edited text";
-  if (candidate.trim() === source.trim()) return "the model returned the section unchanged";
+  if (candidate.trim() === source.trim()) {
+    return action === "grammar" ? null : "the model returned the section unchanged";
+  }
   if (/<\/?think>|<\/?text>|```/iu.test(candidate)) {
     return "the model returned unfinished formatting or reasoning";
   }
@@ -186,21 +334,17 @@ export function rejectedEditReason(
   if (candidateWords.some((word) => word.length > 48 && !sourceWords.includes(word))) {
     return "the edit contains malformed words";
   }
-  if (source.includes("?") && !candidate.includes("?")) {
+  const structuredFactRejection = rejectedStructuredFactReason(source, candidate);
+  if (structuredFactRejection) return structuredFactRejection;
+  const sourceHasQuestion = source.replace(linkPattern, "").includes("?");
+  const candidateHasQuestion = candidate.replace(linkPattern, "").includes("?");
+  if (sourceHasQuestion && !candidateHasQuestion) {
     return "the edit removed a question";
   }
-  if (action === "lighthearted" && !source.includes("?") && candidate.includes("?")) {
+  if (action === "lighthearted" && !sourceHasQuestion && candidateHasQuestion) {
     return "the edit introduced a question";
   }
 
-  const numberTokens = (text: string) => text.match(/\b\d+(?:[.,:]\d+)*\b/gu) ?? [];
-  if (coverage(numberTokens(source), numberTokens(candidate)) < 1 && numberTokens(source).length) {
-    return "the edit changed or removed a number";
-  }
-  const candidateLinks = new Set(links(candidate));
-  if (links(source).some((link) => !candidateLinks.has(link))) {
-    return "the edit changed or removed a link";
-  }
   if ((source.match(/\p{Extended_Pictographic}/gu) ?? []).join("") !==
       (candidate.match(/\p{Extended_Pictographic}/gu) ?? []).join("")) {
     return "the edit changed or removed an emoji";
@@ -210,17 +354,8 @@ export function rejectedEditReason(
       return `the edit changed or removed the meaning of “${marker}”`;
     }
   }
-  const negationPattern =
-    /\b(?:ain't|aren't|arent|barely|cannot|can't|cant|couldn't|couldnt|didn't|didnt|doesn't|doesnt|don't|dont|hadn't|hadnt|hardly|hasn't|hasnt|haven't|havent|isn't|isnt|neither|never|no|nobody|none|nor|not|nothing|nowhere|rarely|seldom|shouldn't|shouldnt|wasn't|wasnt|weren't|werent|without|won't|wont|wouldn't|wouldnt)\b/giu;
-  // A concise rewrite may carry the original negative meaning without an explicit
-  // negator, e.g. "I haven't finished" -> "I'm still finishing the notes".
-  const negativePolarityPattern =
-    /\b(?:awaiting|incomplete|lack|lacked|lacking|lacks|outstanding|pending|still|unable|unfinished|unresolved|yet)\b|\bin progress\b/giu;
-  if ((source.match(negationPattern) ?? []).length > 0 &&
-      (candidate.match(negationPattern) ?? []).length === 0 &&
-      (candidate.match(negativePolarityPattern) ?? []).length === 0) {
-    return "the edit removed a negation";
-  }
+  const negationRejection = rejectedNegationReason(action, source, candidate);
+  if (negationRejection) return negationRejection;
   const lowerCandidateWords = new Set(candidateWords);
   if (capitalizedTerms(source).some((term) => !lowerCandidateWords.has(term.toLowerCase()))) {
     return "the edit changed or removed a name";

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EDIT_ACTIONS } from "../src/types.ts";
 import {
   cleanEditOutput,
   normalizeEditOutput,
@@ -47,11 +48,16 @@ test("rejects responses that answer the supplied text", () => {
   );
 });
 
-test("rejects unchanged output so the editor can retry or warn", () => {
-  assert.match(
-    rejectedEditReason("grammar", "We was waiting.", "We was waiting.") ?? "",
-    /unchanged/,
-  );
+test("accepts unchanged grammar as no suggestion, not as proof the input is correct", () => {
+  assert.equal(rejectedEditReason("grammar", "We are waiting.", "We are waiting."), null);
+  assert.equal(rejectedEditReason("grammar", "We was waiting.", "We was waiting."), null);
+  for (const action of EDIT_ACTIONS.filter((action) => action !== "grammar")) {
+    assert.match(
+      rejectedEditReason(action, "We are waiting.", "We are waiting.") ?? "",
+      /unchanged/,
+      action,
+    );
+  }
 });
 
 test("rejects edits that remove protected facts", () => {
@@ -238,6 +244,112 @@ test("detects negations written without an apostrophe", () => {
       "We want to exceed the budget.",
     ) ?? "",
     /negation/,
+  );
+});
+
+test("accepts safe negative agreement, contractions, and bounded irregular tense corrections", () => {
+  const cases = [
+    ["We dont want to exceed the budget.", "We don't want to exceed the budget."],
+    ["They isn't ready.", "They aren't ready."],
+    ["I’m not ready.", "I am not ready."],
+    ["The meeting itself didn’t went much better.", "The meeting itself didn’t go much better."],
+    ["I did not seen the report.", "I did not see the report."],
+    ["We have not began the review.", "We have not begun the review."],
+    [
+      "We don’t approve the draft and won’t publish the report.",
+      "We do not approve the draft and will not publish the report.",
+    ],
+  ];
+  for (const [source, candidate] of cases) {
+    assert.equal(rejectedEditReason("grammar", source, candidate), null, source);
+  }
+});
+
+test("rejects negation moved between subjects, predicates, objects, or sentences", () => {
+  const cases = [
+    [
+      "The draft isn't ready, but the report is ready.",
+      "The draft is ready, but the report isn't ready.",
+    ],
+    [
+      "We didn’t approve the draft. We accepted the budget.",
+      "We approved the draft. We didn’t accept the budget.",
+    ],
+    [
+      "We didn’t approve the draft, but we approved the budget.",
+      "We approved the draft, but we didn’t approve the budget.",
+    ],
+    [
+      "Sam did not approve the draft. Lee approved the draft.",
+      "Sam approved the draft. Lee did not approve the draft.",
+    ],
+    [
+      "We never approve the draft.",
+      "We do not approve the draft.",
+    ],
+  ];
+  for (const [source, candidate] of cases) {
+    assert.match(rejectedEditReason("grammar", source, candidate) ?? "", /negation/, source);
+  }
+});
+
+test("a concise completion rephrase must retain the same subject and unfinished work", () => {
+  assert.equal(
+    rejectedEditReason("concise", "I haven’t finished the notes yet.", "I’m still finishing the notes."),
+    null,
+  );
+  assert.equal(
+    rejectedEditReason("concise", "We have not completed the review yet.", "We’re still completing the review."),
+    null,
+  );
+  for (const candidate of [
+    "I finished the notes; the report is pending.",
+    "I finished the notes; I'm still finishing work.",
+    "I have finished the notes, still.",
+  ]) {
+    assert.match(
+      rejectedEditReason(
+        "concise",
+        "I wanted to say that I haven't finished the notes yet.",
+        candidate,
+      ) ?? "",
+      /negation/,
+    );
+  }
+  assert.match(
+    rejectedEditReason("concise", "I do not approve the draft.", "I still approve the draft.") ?? "",
+    /negation/,
+  );
+  assert.match(
+    rejectedEditReason(
+      "concise",
+      "I haven't finished the 3 notes yet.",
+      "I'm still finishing 4 notes.",
+    ) ?? "",
+    /number/,
+  );
+});
+
+test("URL credentials remain case-sensitive and malformed URL literals do not crash guards", () => {
+  assert.equal(
+    rejectedEditReason(
+      "grammar",
+      "Please keep https://User:Secret@Example.com/Path here.",
+      "Keep HTTPS://User:Secret@EXAMPLE.COM/Path here.",
+    ),
+    null,
+  );
+  assert.match(
+    rejectedEditReason(
+      "grammar",
+      "Please keep https://User:Secret@Example.com/Path here.",
+      "Keep https://user:secret@example.com/Path here.",
+    ) ?? "",
+    /link/,
+  );
+  assert.equal(
+    rejectedEditReason("grammar", "Please keep https:///path here.", "Keep https:///path here."),
+    null,
   );
 });
 

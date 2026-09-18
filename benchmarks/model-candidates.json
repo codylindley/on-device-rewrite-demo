@@ -1,0 +1,283 @@
+{
+  "schemaVersion": 1,
+  "checkedOn": "2026-09-18",
+  "scope": "Metadata-only investigation of smaller CoEdIT Base ONNX exports for local English grammar evaluation.",
+  "method": {
+    "discoveryUrl": "https://huggingface.co/api/models?search=coedit&limit=200",
+    "evidence": "Official Hugging Face API file sizes, revision SHAs, pinned model cards, and small configuration files. Installed Transformers.js source was read to check expected session names.",
+    "weightsDownloaded": false,
+    "graphsInspected": false,
+    "inferenceRun": false,
+    "remoteCodeExecuted": false,
+    "sizeConvention": "Decimal bytes from API metadata. Graph totals exclude tokenizer/config files, runtime assets, caches, and in-memory tensor/KV-cache overhead.",
+    "licenseCaveat": "A card declaration is evidence, not legal clearance. Missing provenance cannot be repaired by borrowing another repository's license tag."
+  },
+  "recommendation": {
+    "verifiedSmallDropInExport": null,
+    "smallQuantizedLead": "rayliuca/coedit-flan-t5-base-onnx-quantized",
+    "documentedBrowserBaseline": "imrahamed/coedit-base-webgpu-onnx",
+    "conclusion": "No small, quantized, provenance-verified, drop-in Transformers.js CoEdIT Base export was established in this search. Rayliuca has explicit dynamic int8 configuration and three cached-generation graphs, but no card/license/provenance and no merged decoder. Do not treat it as a verified jbochi conversion or a ready WebGPU model.",
+    "nextStep": "For a controlled small browser candidate, obtain documented provenance and license confirmation, then export/quantize a pinned licensed Base checkpoint with an encoder and merged cached decoder. Validate operator support, tokenizer behavior, fidelity, memory, and latency on actual WASM/WebGPU before making compatibility claims.",
+    "notRecommended": "Do not substitute a CoEdIT Large export merely because its derivative card says Apache-2.0. The official grammarly/coedit-large checkpoint declares CC-BY-NC-4.0."
+  },
+  "runtimeContext": {
+    "package": "@huggingface/transformers",
+    "versionObserved": "4.2.0",
+    "localEvidence": "node_modules/@huggingface/transformers/src/models/session_config.js:30-33",
+    "seq2seqSessionNames": ["encoder_model", "decoder_model_merged"],
+    "implication": "The normal seq2seq loader expects a merged decoder. Separate decoder_model and decoder_with_past_model exports require a conversion or a custom generation/session adapter; changing an ONNX subfolder alone is insufficient.",
+    "browserCaveat": "ONNX file presence and cache-related filenames do not prove ONNX Runtime Web WASM or WebGPU operator compatibility. No browser inference was performed for this investigation."
+  },
+  "upstreamEvidence": [
+    {
+      "repository": "jbochi/coedit-base",
+      "revision": "bef93f1b9bae24f9383580764820d5de1adafcdc",
+      "declaredLicense": "apache-2.0",
+      "declaredBaseModel": "google/flan-t5-base",
+      "declaredTrainingDataset": "grammarly/coedit",
+      "sourceUrl": "https://huggingface.co/jbochi/coedit-base/resolve/bef93f1b9bae24f9383580764820d5de1adafcdc/README.md",
+      "caveat": "Community Base fine-tune, not an official Grammarly Base checkpoint. The card leaves intended-use and training/evaluation details incomplete."
+    },
+    {
+      "repository": "google/flan-t5-base",
+      "revision": "7bcac572ce56db69c1ea7c8af255c5d7c9672fc2",
+      "declaredLicense": "apache-2.0",
+      "sourceUrl": "https://huggingface.co/api/models/google/flan-t5-base/revision/7bcac572ce56db69c1ea7c8af255c5d7c9672fc2"
+    },
+    {
+      "repository": "grammarly/coedit",
+      "repositoryType": "dataset",
+      "revision": "e9a255c33ef910bc33a9d2b522653fa87521583e",
+      "declaredLicense": "apache-2.0",
+      "sourceUrl": "https://huggingface.co/datasets/grammarly/coedit/resolve/e9a255c33ef910bc33a9d2b522653fa87521583e/README.md",
+      "caveat": "Dataset metadata does not by itself establish the licensing of every trained derivative or underlying source."
+    },
+    {
+      "repository": "dhruv-pype/coedit-flan-t5-base",
+      "revision": "5f65fd04f1a7ae8a46b1025f7f56fc37a2cae7f5",
+      "declaredLicense": "apache-2.0",
+      "declaredBaseModel": "google/flan-t5-base",
+      "declaredTrainingDataset": "grammarly/coedit",
+      "sourceUrl": "https://huggingface.co/dhruv-pype/coedit-flan-t5-base/resolve/5f65fd04f1a7ae8a46b1025f7f56fc37a2cae7f5/README.md",
+      "caveat": "A separate Base fine-tune. Its similar name and configuration/file sizes do not establish that either Rayliuca or JohnGorri exported these weights. The card's example predictions include unchanged grammatical errors; those are author-reported examples, not our inference measurements."
+    },
+    {
+      "repository": "grammarly/coedit-large",
+      "revision": "5637bcdf9d8d4419f97c8cfea36f7d35c79232b6",
+      "declaredLicense": "cc-by-nc-4.0",
+      "declaredBaseModel": "google/flan-t5-large",
+      "parametersReported": 770000000,
+      "sourceUrl": "https://huggingface.co/grammarly/coedit-large/resolve/5637bcdf9d8d4419f97c8cfea36f7d35c79232b6/README.md",
+      "caveat": "Explicitly distinct from the approximately 250M-parameter community Base models."
+    }
+  ],
+  "candidates": [
+    {
+      "repository": "rayliuca/coedit-flan-t5-base-onnx-quantized",
+      "revision": "2a8cd3d67976fe37fabfba3390cb18be4268a714",
+      "apiUrl": "https://huggingface.co/api/models/rayliuca/coedit-flan-t5-base-onnx-quantized/revision/2a8cd3d67976fe37fabfba3390cb18be4268a714?blobs=true",
+      "status": "small-int8-lead-blocked-by-provenance-and-packaging",
+      "precision": {
+        "label": "dynamic-int8",
+        "evidence": "ort_config.json specifies is_static=false, weights_dtype=QInt8, activations_dtype=QUInt8, format=QOperator, mode=IntegerOps, per_channel=false.",
+        "sourceUrl": "https://huggingface.co/rayliuca/coedit-flan-t5-base-onnx-quantized/resolve/2a8cd3d67976fe37fabfba3390cb18be4268a714/ort_config.json",
+        "caveat": "This is configuration evidence, not graph inspection. It does not mean every tensor/operator is int8, nor does it establish WebGPU support.",
+        "q4Evidence": false
+      },
+      "graphs": [
+        {"path": "encoder_model_quantized.onnx", "role": "encoder", "bytes": 110094562, "sha256": "0825c89c42cc056e57ffc01f900b68edb7627674505fef547ad2961f703a730d"},
+        {"path": "decoder_model_quantized.onnx", "role": "initial-decoder", "bytes": 163487762, "sha256": "013d3d7fae9bf8e31a73b3f8dbcd046bfb249d29c1fe213be9d7ab8398f2b014"},
+        {"path": "decoder_with_past_model_quantized.onnx", "role": "cached-decoder", "bytes": 149261749, "sha256": "a745aa76b9507211925952f8666ef0b8ab0abcf2bd4c9d106342eb16e5a7bc9b"}
+      ],
+      "graphBytesTotal": 422844073,
+      "supportFiles": [
+        {"path": "config.json", "bytes": 1509},
+        {"path": "ort_config.json", "bytes": 763},
+        {"path": "tokenizer.json", "bytes": 2422332},
+        {"path": "tokenizer_config.json", "bytes": 20938},
+        {"path": "special_tokens_map.json", "bytes": 2543},
+        {"path": "spiece.model", "bytes": 791656}
+      ],
+      "tokenizer": {
+        "declaredClass": "T5Tokenizer",
+        "modelMaxLength": 512,
+        "maxLength": 256,
+        "sourceUrl": "https://huggingface.co/rayliuca/coedit-flan-t5-base-onnx-quantized/resolve/2a8cd3d67976fe37fabfba3390cb18be4268a714/tokenizer_config.json",
+        "caveat": "Tokenizer JSON exists, but successful loading and round trips with this project's Transformers.js version remain untested."
+      },
+      "provenance": {
+        "declaredLicense": null,
+        "declaredUpstream": null,
+        "modelCardPresent": false,
+        "licenseFilePresent": false,
+        "configArchitecture": "T5ForConditionalGeneration; d_model=768; 12 encoder and 12 decoder layers; vocab_size=32128",
+        "sourceUrl": "https://huggingface.co/rayliuca/coedit-flan-t5-base-onnx-quantized/resolve/2a8cd3d67976fe37fabfba3390cb18be4268a714/config.json",
+        "commitEvidenceUrl": "https://huggingface.co/api/models/rayliuca/coedit-flan-t5-base-onnx-quantized/commits/2a8cd3d67976fe37fabfba3390cb18be4268a714",
+        "caveat": "No README or LICENSE is listed. The visible upload/initial-commit messages identify no upstream. Base-shaped architecture does not identify a checkpoint; do not label this a jbochi/coedit-base conversion."
+      },
+      "browser": {
+        "mergedDecoderPresent": false,
+        "cachedDecoderPresent": true,
+        "stockTransformersJsPackaging": false,
+        "wasmValidated": false,
+        "webgpuValidated": false,
+        "requiredWork": "Establish source/license, then convert to a merged decoder or implement explicit initial/cached decoder handling. Root-level paths and operator support also need validation."
+      }
+    },
+    {
+      "repository": "JohnGorri/coedit-flan-t5-base-onnx",
+      "revision": "74aeb88f146b95a8e8bab3f06d1ccaa0d7d7abd2",
+      "apiUrl": "https://huggingface.co/api/models/JohnGorri/coedit-flan-t5-base-onnx/revision/74aeb88f146b95a8e8bab3f06d1ccaa0d7d7abd2?blobs=true",
+      "status": "smaller-merged-export-with-unknown-precision-and-provenance",
+      "precision": {
+        "label": "unknown",
+        "evidence": "Graph bytes are smaller than the documented FP32 baseline, but no card or quantization configuration is present. config.json declares dtype=float32, which is not sufficient evidence of ONNX tensor precision.",
+        "sourceUrl": "https://huggingface.co/JohnGorri/coedit-flan-t5-base-onnx/resolve/74aeb88f146b95a8e8bab3f06d1ccaa0d7d7abd2/config.json",
+        "caveat": "Do not infer fp16, q8, or q4 from approximate file sizes or unsuffixed filenames.",
+        "q4Evidence": false
+      },
+      "graphs": [
+        {"path": "onnx/encoder_model.onnx", "role": "encoder", "bytes": 219534160},
+        {"path": "onnx/decoder_model_merged.onnx", "role": "merged-decoder", "bytes": 326303696}
+      ],
+      "graphBytesTotal": 545837856,
+      "supportFiles": [
+        {"path": "config.json", "bytes": 1566},
+        {"path": "generation_config.json", "bytes": 142},
+        {"path": "tokenizer.json", "bytes": 2424334},
+        {"path": "tokenizer_config.json", "bytes": 2570}
+      ],
+      "tokenizer": {
+        "declaredClass": "T5Tokenizer",
+        "modelMaxLength": 512,
+        "maxLength": 160,
+        "sourceUrl": "https://huggingface.co/JohnGorri/coedit-flan-t5-base-onnx/resolve/74aeb88f146b95a8e8bab3f06d1ccaa0d7d7abd2/tokenizer_config.json",
+        "caveat": "Config reports a tokenizers backend and Transformers 5-era files. Compatibility with Transformers.js 4.2.0 has not been tested."
+      },
+      "provenance": {
+        "declaredLicense": null,
+        "declaredUpstream": null,
+        "modelCardPresent": false,
+        "licenseFilePresent": false,
+        "caveat": "The similarly named JohnGorri/coedit-flan-t5-base repository also has no model card. Neither a common name nor Base dimensions establish training lineage or permission."
+      },
+      "browser": {
+        "mergedDecoderPresent": true,
+        "cachedDecoderPresent": "filename-indicates-merged-cache-support-only",
+        "stockTransformersJsPackaging": "matching-graph-names-only",
+        "wasmValidated": false,
+        "webgpuValidated": false,
+        "requiredWork": "Establish precision, upstream/license, tokenizer compatibility, and actual graph signatures/operators before attempting to endorse the export."
+      }
+    },
+    {
+      "repository": "imrahamed/coedit-base-webgpu-onnx",
+      "revision": "bb88a28f63cf459d0ba4f00ebea36446172d0c30",
+      "apiUrl": "https://huggingface.co/api/models/imrahamed/coedit-base-webgpu-onnx/revision/bb88a28f63cf459d0ba4f00ebea36446172d0c30?blobs=true",
+      "status": "documented-fp32-browser-baseline-not-small-quantized",
+      "precision": {
+        "label": "fp32",
+        "evidence": "Card explicitly states FP32, opset 18, Optimum O2 optimization, and text2text-generation-with-past.",
+        "sourceUrl": "https://huggingface.co/imrahamed/coedit-base-webgpu-onnx/resolve/bb88a28f63cf459d0ba4f00ebea36446172d0c30/README.md",
+        "q4Evidence": false
+      },
+      "graphs": [
+        {"path": "onnx/encoder_model.onnx", "role": "encoder", "bytes": 438625877, "sha256": "3e6a0cbf47478c43e2dc31c5b5c306110f08dd2a39af404f5fad288b066e25e7"},
+        {"path": "onnx/decoder_model_merged.onnx", "role": "merged-decoder", "bytes": 650966409, "sha256": "0a78ec87997d1f3df176cf5a113325cc8f1dc1694958c207ddf67b1cd9ad4e37"}
+      ],
+      "graphBytesTotal": 1089592286,
+      "supportFiles": [
+        {"path": "config.json", "bytes": 1570},
+        {"path": "generation_config.json", "bytes": 118},
+        {"path": "tokenizer.json", "bytes": 2422234},
+        {"path": "tokenizer_config.json", "bytes": 21773},
+        {"path": "special_tokens_map.json", "bytes": 2668}
+      ],
+      "provenance": {
+        "declaredLicense": "apache-2.0",
+        "declaredUpstream": "jbochi/coedit-base",
+        "upstreamRevisionRecordedByExport": null,
+        "modelCardPresent": true,
+        "licenseFilePresent": false,
+        "sourceUrl": "https://huggingface.co/imrahamed/coedit-base-webgpu-onnx/resolve/bb88a28f63cf459d0ba4f00ebea36446172d0c30/README.md",
+        "caveat": "The card names the correct community Base lineage and declares Apache-2.0, but does not pin its source checkpoint revision. The current upstream SHA recorded above is not proof of the exact converted revision."
+      },
+      "browser": {
+        "mergedDecoderPresent": true,
+        "cachedDecoderPresent": true,
+        "stockTransformersJsPackaging": "documented-by-publisher",
+        "wasmValidated": false,
+        "webgpuValidated": false,
+        "requiredWork": "Actual local browser inference, fidelity, memory, latency, and fallback evaluation. Publisher validation claims were not independently reproduced."
+      }
+    },
+    {
+      "repository": "inference4j/coedit-base",
+      "revision": "dac2964cd9edf4bc7eb5b1a58b0b5c08921607e6",
+      "apiUrl": "https://huggingface.co/api/models/inference4j/coedit-base/revision/dac2964cd9edf4bc7eb5b1a58b0b5c08921607e6?blobs=true",
+      "status": "unquantized-java-oriented-export-not-a-small-browser-candidate",
+      "precision": {
+        "label": "unquantized-fp32-consistent-metadata",
+        "evidence": "Unsuffixed encoder/decoder files are approximately the size of full-precision Base graphs; no quantized variants or quantization configuration are listed.",
+        "caveat": "Tensor precision was not verified from graph contents; do not use this metadata-only observation as proof that every tensor is FP32.",
+        "q4Evidence": false
+      },
+      "graphs": [
+        {"path": "encoder_model.onnx", "role": "encoder", "bytes": 438705681, "sha256": "848c35a4b02d06e335a23875d6b835ae41a3ace804d10a13ee6a7cd6ca6790c5"},
+        {"path": "decoder_model.onnx", "role": "initial-decoder", "bytes": 650875887, "sha256": "4fb5e78580cba702c0553ebb39ae10a9ce04e8bb5daf77ef8154cc44af83d098"},
+        {"path": "decoder_with_past_model.onnx", "role": "cached-decoder", "bytes": 594217559, "sha256": "72e3d4b9c0b36f41f342716f82fa1f47aa4ddb18871a7e13a0adcf40a4d22fd9"}
+      ],
+      "graphBytesTotal": 1683799127,
+      "supportFiles": [
+        {"path": "config.json", "bytes": 1509},
+        {"path": "tokenizer.json", "bytes": 2422234}
+      ],
+      "provenance": {
+        "declaredLicense": "apache-2.0",
+        "declaredUpstream": "jbochi/coedit-base",
+        "upstreamRevisionRecordedByExport": null,
+        "modelCardPresent": true,
+        "licenseFilePresent": false,
+        "sourceUrl": "https://huggingface.co/inference4j/coedit-base/resolve/dac2964cd9edf4bc7eb5b1a58b0b5c08921607e6/README.md",
+        "caveat": "Card documents Base lineage and Apache-2.0, but targets the Java inference4j library and does not pin the converted upstream revision."
+      },
+      "browser": {
+        "mergedDecoderPresent": false,
+        "cachedDecoderPresent": true,
+        "stockTransformersJsPackaging": false,
+        "wasmValidated": false,
+        "webgpuValidated": false,
+        "requiredWork": "Separate-decoder adaptation/conversion and tokenizer configuration, plus actual browser operator and fidelity validation. Not a download-size improvement."
+      }
+    }
+  ],
+  "otherInspectedRepositories": [
+    {
+      "repository": "rayliuca/coedit-flan-t5-base-onnx",
+      "revision": "826da27aa9253c4097aad1ec50e9cfee6b6ac5a7",
+      "sourceUrl": "https://huggingface.co/api/models/rayliuca/coedit-flan-t5-base-onnx/revision/826da27aa9253c4097aad1ec50e9cfee6b6ac5a7?blobs=true",
+      "finding": "Unquantized-named three-graph sibling with the same listed graph sizes as inference4j. No card/license or tokenizer files listed. Not proof of the quantized repository's upstream."
+    },
+    {
+      "repository": "JohnGorri/coedit-flan-t5-base",
+      "revision": "852b72549ce9f55826c6e8995b022ecb96bb402b",
+      "sourceUrl": "https://huggingface.co/api/models/JohnGorri/coedit-flan-t5-base/revision/852b72549ce9f55826c6e8995b022ecb96bb402b?blobs=true",
+      "finding": "Safetensors checkpoint with no card/license. A same-owner name is not enough to establish ONNX source lineage or license."
+    },
+    {
+      "repository": "jbochi/candle-coedit-quantized",
+      "revision": "666f1670ae5b53dc34b9d53dec2a53bc76e99283",
+      "sourceUrl": "https://huggingface.co/api/models/jbochi/candle-coedit-quantized/revision/666f1670ae5b53dc34b9d53dec2a53bc76e99283?blobs=true",
+      "declaredLicense": "cc-by-nc-4.0",
+      "finding": "Contains model-base-q4_0.gguf and model-base-q4k.gguf, each 139452704 bytes, but no ONNX encoder/cached-decoder pair. Mixed-size Candle repository license cannot be assumed to override any upstream terms. Not a Transformers.js ONNX candidate."
+    },
+    {
+      "repository": "imrahamed/coedit-base-litert-int8",
+      "revision": "aaa785cf3e5a65c5ad5ef28badcb3803d5053ec3",
+      "sourceUrl": "https://huggingface.co/api/models/imrahamed/coedit-base-litert-int8/revision/aaa785cf3e5a65c5ad5ef28badcb3803d5053ec3?blobs=true",
+      "declaredLicense": "apache-2.0",
+      "declaredUpstream": "jbochi/coedit-base",
+      "finding": "Lists encoder.tflite (109978728 bytes), decoder.tflite (166428952 bytes), LICENSE and NOTICE. A different runtime format, not the requested ONNX encoder/cached-decoder artifact; no LiteRT execution was evaluated."
+    }
+  ]
+}

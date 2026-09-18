@@ -1,749 +1,704 @@
-import {
-  For,
-  Show,
-  createMemo,
-  createSignal,
-  onCleanup,
-  onMount,
-} from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { COEDIT_MODEL, COEDIT_VARIANT } from "./lib/coedit-model";
 import { diffWords } from "./lib/diff";
+import { EditorEngine } from "./lib/editor-engine";
+import { QWEN_MODEL, QWEN_VARIANTS, inspectModelCache, modelDownloadOffer, type ModelSpec, type ModelVariant } from "./lib/model";
 import {
-  EDIT_ACTIONS,
-  isRewriteAction,
-  type InferenceBackend,
-  type RewriteAction,
-  type WorkerRequest,
-  type WorkerResponse,
+  EDIT_ACTIONS, ENGINE_LABELS, isRewriteAction,
+  type DownloadOffer, type EngineResult, type InferenceBackend, type RewriteAction, type WorkerEngine, type WorkerResponse,
 } from "./types";
 
-interface ActionOption {
-  id: RewriteAction;
-  label: string;
-  shortLabel: string;
+type Pane = WorkerEngine | "qwen-rewrite";
+type RewriteMode = Exclude<RewriteAction, "grammar">;
+interface Result extends EngineResult {
+  source: string;
+  action: RewriteAction;
+  elapsedMs: number;
+}
+interface Activity {
+  id: number;
+  message: string;
+  progress: number | null;
+  download: DownloadOffer | null;
+}
+const ACTION_LABELS: Record<RewriteAction, string> = {
+  grammar: "Spelling & grammar", concise: "Concise", longer: "Longer",
+  casual: "Casual", professional: "Professional", confident: "Confident",
+  enthusiastic: "Enthusiastic", lighthearted: "Light-hearted",
+};
+const BACKEND_LABELS: Record<InferenceBackend, string> = {
+  webgpu: "WebGPU",
+  wasm: "WebAssembly",
+  browser: "Browser AI",
+  javascript: "JavaScript",
+};
+/** A word list cannot judge grammar, so labelling its output "grammar" would overstate it. */
+function resultScope(result: Result): string {
+  return result.engine === "dictionary" ? "Spelling only" : ACTION_LABELS[result.action];
 }
 
-const PROOFREAD_ACTION: ActionOption = {
-  id: "grammar",
-  label: "Fix spelling & grammar",
-  shortLabel: "Spelling & grammar",
+/** Weight is only half the price. The other half is how long you wait, so every run is timed. */
+function formatElapsed(milliseconds: number): string {
+  if (milliseconds < 1000) return `${Math.max(1, Math.round(milliseconds))} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`;
+}
+const STARTER_TEXT = `Hi team, I recieved the notes from yesterdays meeting. We was suppose to review the invitation, but there are alot of details we still need to check. The adress is wrong, and two of the posters is missing. Please send the corrected version to Maya by Thursday so she can print 25 copies.
+
+Could we move tomorrows practice session to 3:30? Several volunteers cant arrive earlier, and we havent finished setting up the room yet. I would of tested the microphones today, but the speakers hasn't arrived. Please keep the two activities seperate and let me know if the new time work for everyone.`;
+
+/**
+ * One passage cannot show where a word list stops and a language model starts. Each sample isolates a
+ * single axis, so the engine that wins — and the one that quietly damages the text — is unambiguous.
+ */
+interface Sample {
+  id: string;
+  label: string;
+  /** What this passage is designed to reveal about the five engines. */
+  hint: string;
+  text: string;
+}
+const SAMPLES: readonly Sample[] = [
+  {
+    id: "draft",
+    label: "Everyday draft",
+    hint: "A realistic message with spelling, apostrophe, agreement, and word-form errors mixed together — plus a name, a date, a time, and a quantity that must survive.",
+    text: STARTER_TEXT,
+  },
+  {
+    id: "spelling",
+    label: "Misspellings only",
+    hint: "Thirteen misspellings, each with exactly one plausible correction, and not a single grammar error. This is the 540 KB word list's best case — watch whether a gigabyte of weights does any better.",
+    text: `We recieved the shipment yesterday, and the delay occured because the labels were seperate from the packing list. It is neccesary to mesure the shelves again before tommorow, and the calender in the shared enviroment is still wrong. Maya will definately reccomend that we acheive a cleaner handoff, so please do not print anything untill the goverment form is signed.`,
+  },
+  {
+    id: "grammar",
+    label: "Grammar, not spelling",
+    hint: "Every word is spelled correctly, so the dictionary should return this untouched. Everything wrong here is agreement, tense, or word form.",
+    text: `The list of volunteers were printed this morning, but neither of the coordinators have signed it. We was going to review the schedule together, and the posters is still sitting in the van. If the microphones arrives before noon, Maya and me will set them up. I would of asked earlier, but the speakers hasn't been unpacked.`,
+  },
+  {
+    id: "meaning",
+    label: "Meaning, not rules",
+    hint: "Every word here is a real, correctly spelled English word in the wrong place. Only context can tell which is which, so this is where rules run out and a model has to earn its download.",
+    text: `Their going to announce the results tomorrow, and I think its going to effect the whole team. Please right back to me if the new schedule is worse then the old one. We should of asked whether the venue accepts more then forty people, because your the one who has to sign the contract.`,
+  },
+  {
+    id: "traps",
+    label: "Leave this alone",
+    hint: "Nothing here is wrong. It is made of names, identifiers, paths, versions, times, and a negation, so every change an engine makes is damage — watch which ones stay out of the way and which one slips.",
+    text: `Ship the fix to production after the retryLimit change lands in config/app.json. The notes from Bo and Maya cover the ChatGPT export, the figma.com mockups, and the checklist in /usr/local/share/docs. The build is v2.10.3, it needs 25 GB of disk, and it must not run before 3:30 PM on Thursday. Do not merge this until the speakers have arrived.`,
+  },
+];
+const PANES: readonly Pane[] = ["dictionary", "harper", "coedit", "qwen", "qwen-rewrite"];
+/** These run entirely from bundled assets, so they start immediately and in parallel. */
+const LOCAL_PANES: readonly Pane[] = ["dictionary", "harper"];
+const PANE_TITLES: Record<Pane, string> = {
+  dictionary: "Dictionary",
+  harper: "Harper",
+  coedit: "CoEdIT Base",
+  qwen: "Qwen 3 grammar",
+  "qwen-rewrite": "Qwen 3 rewrites",
+};
+interface PaneCopy {
+  summary: string;
+  detail: string;
+  /** Shown as the column's headline cost, in tabular figures. */
+  weight: string;
+  /** What the visitor must agree to before this column can run. */
+  gate: string;
+  /** Drives the comparison bar. Zero means the column adds nothing to download. */
+  bytes: number;
+}
+
+/** The spread runs from a word list to a gigabyte of weights, so the bar is logarithmic;
+ *  a linear bar would render every engine except CoEdIT as an invisible sliver. */
+const WEIGHT_FLOOR = 100_000;
+const WEIGHT_CEILING = 1_100_000_000;
+function weightShare(bytes: number): number {
+  if (bytes <= 0) return 0;
+  const span = Math.log10(WEIGHT_CEILING) - Math.log10(WEIGHT_FLOOR);
+  const ratio = (Math.log10(bytes) - Math.log10(WEIGHT_FLOOR)) / span;
+  return Math.max(4, Math.min(100, Math.round(ratio * 100)));
+}
+/** The cost line is the comparison: the same job, priced from a quarter-megabyte to a gigabyte. */
+const PANE_COPY: Record<Pane, PaneCopy> = {
+  dictionary: {
+    summary: "A Hunspell word list. Finds misspellings, not grammar.",
+    detail: "Ordinary words are looked up in an English word list; identifier-like tokens, links, and capitalised words away from a sentence start are reported rather than replaced. It applies its top guess and reports the rest. Having no sense of context, it can still pick the wrong real word.",
+    weight: "540 KB", gate: "Bundled with the page", bytes: 540_000,
+  },
+  harper: {
+    summary: "Rule-based checks. No neural model download.",
+    detail: "Applies rule hits that offer exactly one suggestion and reports the rest below. Lone tokens a rule can only reshape \u2014 identifiers, text against code punctuation, recasing an already-capitalised word \u2014 are reported instead. Rules still fire without wider context, and several can flag the same span, so findings can outnumber the problems.",
+    weight: "16 MB", gate: "Bundled with the page", bytes: 16_164_077,
+  },
+  coedit: {
+    summary: "On-device AI tuned for text editing.",
+    detail: "Spelling and grammar corrections only. No Harper cleanup or automatic tone changes are requested.",
+    weight: "1.09 GB", gate: "Download needs approval", bytes: 1_089_592_286,
+  },
+  qwen: {
+    summary: "Grammar and spelling only. No tone rewrite.",
+    detail: "Spelling and grammar corrections only. No Harper cleanup or automatic tone changes are requested.",
+    weight: "570–920 MB", gate: "Download needs approval", bytes: 569_789_750,
+  },
+  "qwen-rewrite": {
+    summary: "Tone or length rewrites, including grammar cleanup.",
+    detail: "",
+    weight: "No extra download", gate: "570\u2013920 MB if Qwen 3 grammar has not run", bytes: 0,
+  },
+};
+const REWRITE_GROUPS: readonly { label: string; actions: readonly RewriteMode[] }[] = [
+  { label: "Tone", actions: ["casual", "professional", "confident", "enthusiastic", "lighthearted"] },
+  { label: "Length", actions: ["concise", "longer"] },
+];
+interface PaneModel {
+  spec: ModelSpec;
+  variants: readonly ModelVariant[];
+  estimate: ModelVariant;
+}
+const QWEN_PANE_MODEL: PaneModel = {
+  spec: QWEN_MODEL,
+  variants: [QWEN_VARIANTS.q4f16, QWEN_VARIANTS.q4, QWEN_VARIANTS.q8],
+  estimate: QWEN_VARIANTS.q4f16,
+};
+const PANE_MODELS: Partial<Record<Pane, PaneModel>> = {
+  coedit: { spec: COEDIT_MODEL, variants: [COEDIT_VARIANT], estimate: COEDIT_VARIANT },
+  qwen: QWEN_PANE_MODEL,
+  "qwen-rewrite": QWEN_PANE_MODEL,
 };
 
-const LENGTH_ACTIONS: ReadonlyArray<ActionOption> = [
-  { id: "concise", label: "Concise", shortLabel: "Concise" },
-  { id: "longer", label: "Longer", shortLabel: "Longer" },
-];
-
-const TONE_ACTIONS: ReadonlyArray<ActionOption> = [
-  { id: "casual", label: "Casual", shortLabel: "Casual" },
-  { id: "professional", label: "Professional", shortLabel: "Professional" },
-  { id: "confident", label: "Confident", shortLabel: "Confident" },
-  { id: "enthusiastic", label: "Enthusiastic", shortLabel: "Enthusiastic" },
-  { id: "lighthearted", label: "Light-hearted", shortLabel: "Light-hearted" },
-];
-
-const ACTIONS: ReadonlyArray<ActionOption> = [
-  PROOFREAD_ACTION,
-  ...LENGTH_ACTIONS,
-  ...TONE_ACTIONS,
-];
-
-const STARTER_TEXT =
-  "Hey team, I wanted to check if we could maybe move tomorrows review a little later because I haven't finish the notes yet.";
-
-type UiPhase =
-  | "idle"
-  | "detecting"
-  | "loading"
-  | "generating"
-  | "ready"
-  | "error";
-
-interface RewriteResult {
-  before: string;
-  after: string;
-  action: RewriteAction;
-  attempt: number;
-  warnings: string[];
-}
-
-interface ActiveRequest {
-  id: number;
-  text: string;
-  action: RewriteAction;
-  attempt: number;
-}
-
-interface PendingPromise {
-  id: number;
-  resolve(value: string): void;
-  reject(reason: Error): void;
+/**
+ * Approval covers the exact builds that were priced — every dtype the engine may fall back to, and no
+ * other revision — and is cleared when the batch ends so it can never authorise a later download.
+ */
+function approvedKeys(model: PaneModel): string[] {
+  return model.variants.map((variant) => modelDownloadOffer(model.spec, variant).key);
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${Math.round(bytes / 1024 / 1024)} MB`;
+  return bytes >= 1_000_000_000
+    ? `${(bytes / 1_000_000_000).toFixed(2)} GB`
+    : `${Math.ceil(bytes / 1_000_000)} MB`;
 }
 
-interface EditingProgress {
-  completed: number;
-  total: number;
-}
-
-function friendlyError(message: string): string {
-  if (/fetch|network|download|failed to load/i.test(message)) {
-    return "The model download was interrupted. Check your connection and try again.";
+/** Weights already in the Cache API download nothing, so they need no approval. */
+async function missingDownloads(panes: readonly Pane[]): Promise<readonly PaneModel[]> {
+  const required = new Map<string, PaneModel>();
+  for (const pane of panes) {
+    const model = PANE_MODELS[pane];
+    if (model) required.set(model.spec.id, model);
   }
-  if (/memory|allocation|out of bounds|runtime/i.test(message)) {
-    return "This device ran out of memory while loading the model. Close other tabs and try again.";
+  const missing: PaneModel[] = [];
+  for (const model of required.values()) {
+    let cached = false;
+    for (const variant of model.variants) {
+      try {
+        if (await inspectModelCache(globalThis.caches, model.spec, variant) === "cached") { cached = true; break; }
+      } catch (error) {
+        console.warn("Model cache could not be inspected.", error);
+      }
+    }
+    if (!cached) missing.push(model);
   }
-  if (/could not produce a usable edit|left unchanged|omitted too much|changed too much/i.test(message)) {
-    return "The local model could not produce a safe edit. Retry, or edit the difficult section separately.";
-  }
-  return "The local model could not finish this edit. You can retry without losing your text.";
+  return missing;
 }
 
 export default function App() {
-  const [text, setText] = createSignal(STARTER_TEXT);
-  const [phase, setPhase] = createSignal<UiPhase>("idle");
-  const [statusText, setStatusText] = createSignal(
-    "The model downloads on your first edit, then stays in the browser cache.",
-  );
-  const [progress, setProgress] = createSignal<number | null>(null);
-  const [progressBytes, setProgressBytes] = createSignal<string | null>(null);
-  const [editingProgress, setEditingProgress] = createSignal<EditingProgress | null>(null);
-  const [backend, setBackend] = createSignal<InferenceBackend | null>(null);
-  const [activeAction, setActiveAction] = createSignal<RewriteAction | null>(null);
-  const [result, setResult] = createSignal<RewriteResult | null>(null);
-  const [errorDetails, setErrorDetails] = createSignal<string | null>(null);
-  const [busy, setBusy] = createSignal(false);
-
-  let worker: Worker | undefined;
+  const [passage, setPassageText] = createSignal(STARTER_TEXT);
+  const [results, setResults] = createSignal<Record<Pane, Result | null>>({ dictionary: null, harper: null, coedit: null, qwen: null, "qwen-rewrite": null });
+  const [activities, setActivities] = createSignal<Record<Pane, Activity | null>>({ dictionary: null, harper: null, coedit: null, qwen: null, "qwen-rewrite": null });
+  const [notices, setNotices] = createSignal<Record<Pane, string | null>>({ dictionary: null, harper: null, coedit: null, qwen: null, "qwen-rewrite": null });
+  const [qwenRewriteAction, setQwenRewriteAction] = createSignal<RewriteMode>("professional");
+  const [queued, setQueued] = createSignal<readonly Pane[]>([]);
+  const [batchRunning, setBatchRunning] = createSignal(false);
+  const [batchPlan, setBatchPlan] = createSignal<readonly PaneModel[] | null>(null);
+  const [batchChecking, setBatchChecking] = createSignal(false);
+  const [agentTool, setAgentTool] = createSignal(false);
+  /** Derived, not stored: editing the passage deselects the chip without any extra bookkeeping. */
+  const activeSample = createMemo(() => SAMPLES.find((sample) => sample.text === passage()));
+  const editors = { harper: new EditorEngine(), dictionary: new EditorEngine(), neural: new EditorEngine() };
+  const outputHeadings: Partial<Record<Pane, HTMLHeadingElement>> = {};
+  const aiBusy = createMemo(() => PANES.some((pane) => !LOCAL_PANES.includes(pane) && activities()[pane]));
+  const anyBusy = createMemo(() => PANES.some((pane) => Boolean(activities()[pane])));
+  const anyInput = createMemo(() => Boolean(passage().trim()));
   let sequence = 0;
-  let activeRequest: ActiveRequest | null = null;
-  let pendingPromise: PendingPromise | null = null;
-  let textarea: HTMLTextAreaElement | undefined;
-  let resultHeading: HTMLHeadingElement | undefined;
+  let focusRequest = 0;
+  let batchToken = 0;
+  let approvedModels = new Set<string>();
+  /** Local panes start before the download prompt, so the batch adopts jobs that are already running. */
+  let pendingLocalJobs: readonly Promise<unknown>[] = [];
 
-  const wordCount = createMemo(() => {
-    const trimmed = text().trim();
-    return trimmed ? trimmed.split(/\s+/).length : 0;
-  });
-
-  const activeActionLabel = createMemo(
-    () => ACTIONS.find((action) => action.id === activeAction())?.shortLabel ?? "Edit",
-  );
-
-  const diff = createMemo(() => {
-    const candidate = result();
-    return candidate ? diffWords(candidate.before, candidate.after) : [];
-  });
-
-  const hasChanges = createMemo(() => {
-    const candidate = result();
-    return candidate ? candidate.before !== candidate.after : false;
-  });
-
-  const engineTitle = createMemo(() => {
-    switch (phase()) {
-      case "detecting":
-        return "Choosing the fastest engine";
-      case "loading":
-        return progress() === null ? "Loading the local model" : `Downloading · ${Math.round(progress() ?? 0)}%`;
-      case "generating":
-        return editingProgress()?.total && editingProgress()!.total > 1
-          ? `${activeActionLabel()} · ${editingProgress()!.completed} of ${editingProgress()!.total}`
-          : `${activeActionLabel()} in progress`;
-      case "ready":
-        return "Model ready on this device";
-      case "error":
-        return "That edit did not finish";
-      default:
-        return "Ready when you are";
-    }
-  });
-
-  function settlePending(error?: Error, value?: string) {
-    if (!pendingPromise) return;
-    const pending = pendingPromise;
-    pendingPromise = null;
-    if (error) pending.reject(error);
-    else pending.resolve(value ?? "");
+  function editorFor(pane: Pane) {
+    if (pane === "harper") return editors.harper;
+    if (pane === "dictionary") return editors.dictionary;
+    return editors.neural;
   }
 
-  function handleWorkerMessage(event: MessageEvent<WorkerResponse>) {
-    const message = event.data;
-    if (!activeRequest || message.id !== activeRequest.id) return;
+  function runBlocked(pane: Pane): boolean {
+    if (batchChecking() || batchPlan()) return true;
+    if (queued().includes(pane)) return true;
+    return LOCAL_PANES.includes(pane) ? Boolean(activities()[pane]) : aiBusy();
+  }
 
+  function updateActivity(pane: Pane, id: number, patch: Partial<Activity>) {
+    setActivities((current) => {
+      const previous = current[pane];
+      return previous?.id === id ? { ...current, [pane]: { ...previous, ...patch } } : current;
+    });
+  }
+
+  function stop(pane: Pane) {
+    const wasQueued = queued().includes(pane);
+    if (wasQueued) setQueued((current) => current.filter((item) => item !== pane));
+    if (!activities()[pane]) {
+      if (wasQueued) setNotices((current) => ({ ...current, [pane]: "Removed from the run-all queue." }));
+      return;
+    }
+    setActivities((current) => ({ ...current, [pane]: null }));
+    editorFor(pane).cancel();
+    setNotices((current) => ({ ...current, [pane]: "Stopped. Your input is unchanged." }));
+  }
+
+  function setPassage(text: string) {
+    // Editing the passage invalidates every result, plus any preflight or approval prompt still in flight for the old text.
+    stopAll();
+    pendingLocalJobs = [];
+    for (const pane of PANES) clearOutput(pane);
+    setPassageText(text);
+  }
+
+  function clearOutput(pane: Pane) {
+    setResults((current) => ({ ...current, [pane]: null }));
+    setNotices((current) => ({ ...current, [pane]: null }));
+  }
+
+  function onEvent(pane: Pane, message: WorkerResponse) {
+    if (activities()[pane]?.id !== message.id) return;
     switch (message.type) {
+      case "download-required":
+        updateActivity(pane, message.id, { download: message.download, progress: null, message: "Approval needed before downloading missing files." });
+        if (approvedModels.has(message.download.key)) approve(pane);
+        break;
       case "status":
-        setPhase(message.phase);
-        setStatusText(message.message);
-        if (message.phase === "generating") {
-          setProgress(null);
-          setProgressBytes(null);
-          setEditingProgress(null);
-        }
+        if (!activities()[pane]?.download) updateActivity(pane, message.id, { message: message.message });
         break;
-      case "progress": {
-        setPhase("loading");
-        setProgress(message.progress);
-        if (message.loaded && message.total) {
-          setProgressBytes(`${formatBytes(message.loaded)} of ${formatBytes(message.total)}`);
-        }
+      case "progress":
+        updateActivity(pane, message.id, { progress: message.progress });
         break;
-      }
       case "editing-progress":
-        setPhase("generating");
-        setEditingProgress({
-          completed: message.completed,
-          total: message.total,
+        updateActivity(pane, message.id, {
+          message: `${message.completed} of ${message.total} sections processed.`, progress: null,
         });
-        setStatusText(
-          message.total > 1
-            ? `Editing section ${Math.min(message.completed + 1, message.total)} of ${message.total}…`
-            : "Editing locally on your device…",
-        );
         break;
-      case "backend":
-        setBackend(message.backend);
+      case "model-ready":
+        updateActivity(pane, message.id, {
+          message: `${ENGINE_LABELS[message.engine]} ready · ${BACKEND_LABELS[message.backend]}`,
+          progress: null,
+        });
         break;
       case "fallback":
-        setPhase("loading");
-        setBackend("wasm");
-        setProgress(null);
-        setProgressBytes(null);
-        setStatusText(message.message);
+        updateActivity(pane, message.id, { message: message.message, progress: null });
         break;
-      case "result": {
-        const request = activeRequest;
-        activeRequest = null;
-        setBackend(message.backend);
-        setBusy(false);
-        setPhase("ready");
-        setProgress(null);
-        setProgressBytes(null);
-        setEditingProgress(null);
-        setStatusText(
-          message.warnings.length
-            ? `Finished with ${message.warnings.length} section${message.warnings.length === 1 ? "" : "s"} left unchanged for safety.`
-            : "This model is cached for faster edits during future visits.",
-        );
-        setResult({
-          before: request.text,
-          after: message.text,
-          action: request.action,
-          attempt: request.attempt,
-          warnings: message.warnings,
-        });
-        settlePending(undefined, message.text);
-        queueMicrotask(() => resultHeading?.focus());
-        break;
-      }
-      case "error":
-        activeRequest = null;
-        setBusy(false);
-        setPhase("error");
-        setProgress(null);
-        setProgressBytes(null);
-        setEditingProgress(null);
-        setErrorDetails(message.message);
-        setStatusText(friendlyError(message.message));
-        settlePending(new Error(message.message));
+      case "cache-warning":
+        setNotices((current) => ({ ...current, [pane]: message.message }));
         break;
     }
   }
 
-  function ensureWorker(): Worker {
-    if (worker) return worker;
-
-    worker = new Worker(new URL("./rewrite.worker.ts", import.meta.url), {
-      type: "module",
-    });
-    worker.addEventListener("message", handleWorkerMessage);
-    worker.addEventListener("error", (event) => {
-      if (!activeRequest) return;
-      const message = event.message || "The model worker stopped unexpectedly.";
-      activeRequest = null;
-      setBusy(false);
-      setPhase("error");
-      setProgress(null);
-      setStatusText(friendlyError(message));
-      setErrorDetails(message);
-      settlePending(new Error(message));
-    });
-    return worker;
+  function approve(pane: Pane) {
+    const activity = activities()[pane];
+    if (!activity?.download) return;
+    focusRequest = activity.id;
+    if (!editorFor(pane).approveDownload(activity.id, activity.download.key)) {
+      stop(pane);
+      setNotices((current) => ({ ...current, [pane]: "This download request expired. Run the check again." }));
+      return;
+    }
+    updateActivity(pane, activity.id, { download: null, message: "Loading approved files. Cached files are reused." });
   }
 
-  function startRewrite(
-    action: RewriteAction,
-    sourceText: string,
-    attempt = 0,
-  ): Promise<string> {
-    const trimmed = sourceText.trim();
-    if (!trimmed) return Promise.reject(new Error("Add some text before choosing an edit."));
-    if (busy()) return Promise.reject(new Error("Another edit is already running."));
-
+  async function run(pane: Pane): Promise<Result> {
+    if (runBlocked(pane)) throw new Error(LOCAL_PANES.includes(pane) ? `${PANE_TITLES[pane]} is already running.` : "Another AI check is running. Finish or stop it first.");
+    const source = passage();
+    if (!source.trim()) throw new Error("Add text before running this engine.");
+    const engine: WorkerEngine = pane === "qwen-rewrite" ? "qwen" : pane;
+    const action = pane === "qwen-rewrite" ? qwenRewriteAction() : "grammar";
     const id = ++sequence;
-    const request: WorkerRequest = {
-      type: "rewrite",
-      id,
-      text: sourceText,
-      action,
-      attempt,
-    };
-
-    setResult(null);
-    setErrorDetails(null);
-    setBusy(true);
-    setPhase("detecting");
-    setStatusText("Preparing the on-device editor…");
-    setProgress(null);
-    setProgressBytes(null);
-    setEditingProgress(null);
-    setActiveAction(action);
-    activeRequest = { id, text: sourceText, action, attempt };
-
-    const response = new Promise<string>((resolve, reject) => {
-      pendingPromise = { id, resolve, reject };
-    });
-    ensureWorker().postMessage(request);
-    return response;
-  }
-
-  function stopWork(reason = "The edit was stopped.") {
-    if (!activeRequest) return;
-    const stoppedId = activeRequest.id;
-    activeRequest = null;
-    worker?.terminate();
-    worker = undefined;
-    setBusy(false);
-    setPhase("idle");
-    setProgress(null);
-    setProgressBytes(null);
-    setEditingProgress(null);
-    setBackend(null);
-    setActiveAction(null);
-    setStatusText("Stopped. Any downloaded model files remain in the browser cache.");
-    if (pendingPromise?.id === stoppedId) settlePending(new Error(reason));
-  }
-
-  function handleTextInput(value: string) {
-    if (busy()) stopWork("The composer changed, so the running edit was stopped.");
-    setText(value);
-    setResult(null);
-    setErrorDetails(null);
-    if (phase() === "error") {
-      setPhase("idle");
-      setStatusText("Your text stays here. Choose an action whenever you are ready.");
+    focusRequest = id;
+    clearOutput(pane);
+    setActivities((current) => ({
+      ...current, [pane]: { id, message: `Preparing ${ENGINE_LABELS[engine]}…`, progress: null, download: null },
+    }));
+    try {
+      const started = performance.now();
+      const output = await editorFor(pane).run({
+        type: "rewrite", id, action, text: source, attempt: 0, engine, comparison: true,
+        ...(action === "grammar" ? { grammarDepth: LOCAL_PANES.includes(pane) ? "quick" : "deep" } : {}),
+      }, (event) => onEvent(pane, event));
+      if (activities()[pane]?.id !== id) throw new DOMException("The input changed.", "AbortError");
+      const result: Result = { ...output, source, action, elapsedMs: performance.now() - started };
+      setResults((current) => ({ ...current, [pane]: result }));
+      queueMicrotask(() => {
+        const activeElement = document.activeElement;
+        const stillInPanel = document.getElementById(`${pane}-panel`)?.contains(activeElement);
+        const blurredRunButton = activeElement === document.body && focusRequest === id;
+        if (results()[pane] === result && (stillInPanel || blurredRunButton)) {
+          outputHeadings[pane]?.focus();
+        }
+      });
+      return result;
+    } catch (error) {
+      if (activities()[pane]?.id === id) {
+        const message = error instanceof Error ? error.message : String(error);
+        setNotices((current) => ({ ...current, [pane]: message }));
+      }
+      throw error;
+    } finally {
+      if (activities()[pane]?.id === id) setActivities((current) => ({ ...current, [pane]: null }));
     }
   }
 
-  function replaceText() {
-    const candidate = result();
-    if (!candidate) return;
-    setText(candidate.after);
-    setResult(null);
-    setActiveAction(null);
-    setStatusText("Suggestion applied. The model remains ready for another edit.");
-    queueMicrotask(() => {
-      textarea?.focus();
-      textarea?.setSelectionRange(candidate.after.length, candidate.after.length);
-    });
+  async function runAll() {
+    if (batchRunning() || batchChecking() || anyBusy()) return;
+    const panes = passage().trim() ? [...PANES] : [];
+    if (!panes.length) return;
+    const token = ++batchToken;
+    const localJobs = panes
+      .filter((pane) => LOCAL_PANES.includes(pane))
+      .map((pane) => run(pane).catch(() => undefined));
+    setBatchChecking(true);
+    let missing: readonly PaneModel[];
+    try {
+      missing = await missingDownloads(panes.filter((pane) => !LOCAL_PANES.includes(pane)));
+    } finally {
+      setBatchChecking(false);
+    }
+    // The passage may have changed while the cache was being read; that edit already cancelled this run.
+    if (batchToken !== token) return;
+    if (missing.length) {
+      pendingLocalJobs = localJobs;
+      setBatchPlan(missing);
+      return;
+    }
+    void startBatch(panes, localJobs);
   }
 
-  function cancelResult() {
-    setResult(null);
-    setActiveAction(null);
-    queueMicrotask(() => textarea?.focus());
+  function confirmBatch() {
+    const plan = batchPlan();
+    if (!plan) return;
+    for (const model of plan) for (const key of approvedKeys(model)) approvedModels.add(key);
+    setBatchPlan(null);
+    const panes = passage().trim() ? [...PANES] : [];
+    const localJobs = pendingLocalJobs;
+    pendingLocalJobs = [];
+    if (panes.length) void startBatch(panes, localJobs);
   }
 
-  function clearText() {
-    if (busy()) stopWork();
-    setText("");
-    setResult(null);
-    setActiveAction(null);
-    queueMicrotask(() => textarea?.focus());
+  async function startBatch(panes: readonly Pane[], localJobs: readonly Promise<unknown>[] = []) {
+    const token = ++batchToken;
+    const aiPanes = panes.filter((pane) => !LOCAL_PANES.includes(pane));
+    setBatchRunning(true);
+    setQueued(aiPanes);
+    const jobs: Promise<unknown>[] = [...localJobs];
+    jobs.push((async () => {
+      for (const pane of aiPanes) {
+        if (batchToken !== token) return;
+        if (!queued().includes(pane)) continue;
+        setQueued((current) => current.filter((item) => item !== pane));
+        await run(pane).catch(() => undefined);
+      }
+    })());
+    await Promise.all(jobs);
+    if (batchToken !== token) return;
+    approvedModels.clear();
+    setQueued([]);
+    setBatchRunning(false);
+  }
+
+  function stopAll() {
+    batchToken += 1;
+    setQueued([]);
+    setBatchRunning(false);
+    setBatchPlan(null);
+    approvedModels = new Set();
+    for (const pane of PANES) stop(pane);
   }
 
   onMount(() => {
     const context = document.modelContext;
     if (!context?.registerTool) return;
-
     const lifecycle = new AbortController();
-    const registration = context.registerTool(
-      {
-        name: "rewrite_text_on_device",
-        title: "Improve text on device",
-        description:
-          "Stage an on-device grammar correction or rewrite in the visible preview. Use when the user wants to improve supplied text without uploading it to a server.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            text: { type: "string", minLength: 1 },
-            action: {
-              type: "string",
-              enum: [...EDIT_ACTIONS],
-            },
-          },
-          required: ["text", "action"],
-          additionalProperties: false,
+    const registration = context.registerTool({
+      name: "rewrite_text_on_device",
+      title: "Proofread or rewrite text on device",
+      description: "Run an engine in its own input/output panel. The dictionary and Harper answer immediately with no download; the neural engines may ask the user to approve weights first. Qwen grammar uses the grammar-only column; other Qwen actions use the rewrites column. AI output is not postprocessed by Harper or applied to the input automatically.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", minLength: 1 },
+          engine: { type: "string", enum: ["dictionary", "harper", "coedit", "qwen"] },
+          action: { type: "string", enum: [...EDIT_ACTIONS], description: "Only Qwen supports actions other than grammar." },
         },
-        annotations: { readOnlyHint: false, untrustedContentHint: true },
-        async execute(input: unknown) {
-          if (!input || typeof input !== "object") throw new TypeError("Input must be an object.");
-          const candidate = input as { text?: unknown; action?: unknown };
-          if (typeof candidate.text !== "string" || !candidate.text.trim()) {
-            throw new TypeError("text must be a non-empty string.");
-          }
-          if (!isRewriteAction(candidate.action)) throw new TypeError("action is not supported.");
-
-          setText(candidate.text);
-          setResult(null);
-          const rewrittenText = await startRewrite(candidate.action, candidate.text);
-          return {
-            action: candidate.action,
-            originalText: candidate.text,
-            rewrittenText,
-            backend: backend(),
-            state: "previewed",
-          };
-        },
+        required: ["text", "engine"], additionalProperties: false,
       },
-      { signal: lifecycle.signal },
-    );
-
-    void Promise.resolve(registration).catch((error: unknown) => {
-      console.warn("WebMCP tool registration was unavailable.", error);
-    });
-    onCleanup(() => lifecycle.abort());
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      async execute(input: unknown) {
+        if (!input || typeof input !== "object") throw new TypeError("Input must be an object.");
+        const value = input as Record<string, unknown>;
+        if (typeof value.text !== "string" || !value.text.trim()) throw new TypeError("text must not be empty.");
+        if (value.engine !== "dictionary" && value.engine !== "harper" &&
+          value.engine !== "coedit" && value.engine !== "qwen") {
+          throw new TypeError("Choose dictionary, harper, coedit, or qwen explicitly.");
+        }
+        const action = value.action ?? "grammar";
+        if (!isRewriteAction(action) || (value.engine !== "qwen" && action !== "grammar")) {
+          throw new TypeError("Only Qwen supports tone and length actions.");
+        }
+        const pane: Pane = value.engine === "qwen" && action !== "grammar" ? "qwen-rewrite" : value.engine;
+        if (runBlocked(pane)) throw new Error(LOCAL_PANES.includes(pane) ? `${PANE_TITLES[pane]} is already running.` : "Another AI check is running. Finish or stop it first.");
+        if (pane === "qwen-rewrite" && action !== "grammar") setQwenRewriteAction(action);
+        setPassage(value.text);
+        const result = await run(pane);
+        return {
+          originalText: result.source, rewrittenText: result.text, action: result.action,
+          engine: result.engine, backend: result.backend, warnings: result.warnings,
+          findings: result.findings, pane, state: "previewed",
+        };
+      },
+    }, { signal: lifecycle.signal });
+    void Promise.resolve(registration)
+      .then(() => setAgentTool(true))
+      .catch((error: unknown) => console.warn("WebMCP registration was unavailable.", error));
+    onCleanup(() => { lifecycle.abort(); setAgentTool(false); });
   });
 
   onCleanup(() => {
-    worker?.terminate();
-    settlePending(new Error("The page was closed."));
+    batchToken += 1;
+    setQueued([]);
+    setBatchRunning(false);
+    setActivities({ dictionary: null, harper: null, coedit: null, qwen: null, "qwen-rewrite": null });
+    editors.harper.dispose();
+    editors.dictionary.dispose();
+    editors.neural.dispose();
   });
+
+  const Panel = (props: { pane: Pane }) => {
+    const title = PANE_TITLES[props.pane];
+    const activity = () => activities()[props.pane];
+    const result = () => results()[props.pane];
+    const isQueued = () => queued().includes(props.pane);
+    const diff = createMemo(() => {
+      const value = result();
+      return value ? diffWords(value.source, value.text) : [];
+    });
+    return (
+      <section id={`${props.pane}-panel`} class="comparison-panel" aria-labelledby={`${props.pane}-title`}>
+        <header class="panel-heading">
+          <h2 id={`${props.pane}-title`}>{title}</h2>
+          <div class="engine-weight">
+            <span class="weight-size">{PANE_COPY[props.pane].weight}</span>
+            <span class="weight-gate">{PANE_COPY[props.pane].gate}</span>
+            <div class="weight-bar" aria-hidden="true">
+              <span style={{ width: `${weightShare(PANE_COPY[props.pane].bytes)}%` }} />
+            </div>
+          </div>
+          <p>{PANE_COPY[props.pane].summary}</p>
+          <Show when={PANE_COPY[props.pane].detail}>{(detail) => (
+            <p class="engine-explanation">{detail()}</p>
+          )}</Show>
+          <Show when={props.pane === "qwen-rewrite"}>
+            <div class="model-controls">
+              <div>
+                <label for="qwen-rewrite-action">Rewrite action</label>
+                <select id="qwen-rewrite-action" value={qwenRewriteAction()} disabled={Boolean(activity())}
+                  onChange={(event) => {
+                    const action = event.currentTarget.value;
+                    if (isRewriteAction(action) && action !== "grammar") {
+                      setQwenRewriteAction(action);
+                      clearOutput("qwen-rewrite");
+                    } else setNotices((current) => ({ ...current, "qwen-rewrite": "Choose a listed rewrite action." }));
+                  }}>
+                  <For each={REWRITE_GROUPS}>{(group) => (
+                    <optgroup label={group.label}>
+                      <For each={group.actions}>{(action) => <option value={action}>{ACTION_LABELS[action]}</option>}</For>
+                    </optgroup>
+                  )}</For>
+                </select>
+              </div>
+            </div>
+          </Show>
+        </header>
+
+        <div class="panel-actions">
+          <Show when={activity() || isQueued()} fallback={
+            <button class="secondary-button" type="button" disabled={!anyInput() || runBlocked(props.pane)}
+              onClick={() => void run(props.pane).catch(() => undefined)}>Run {title}</button>
+          }>
+            <button class="secondary-button" type="button"
+              aria-label={activity() ? undefined : `Leave queue for ${title}`}
+              onClick={() => stop(props.pane)}>{activity() ? `Stop ${title}` : "Leave queue"}</button>
+          </Show>
+        </div>
+
+        <div class="panel-status" aria-live="polite">
+          <Show when={!activity() && isQueued()}>
+            <p>Queued. AI checks run one at a time.</p>
+          </Show>
+          <Show when={activity()}>{(current) => (
+            <>
+              <p>{current().message}</p>
+              <Show when={current().download}>{(offer) => (
+                <section class="download-prompt" aria-label={`${title} download approval`}>
+                  <h3>Download {offer().label}?</h3>
+                  <p>About {offer().size.replace(/^about /, "")}. Only missing files are fetched; cached files are reused.</p>
+                  <p>Your input stays on this device. Nothing is uploaded to a model service.</p>
+                  <div class="panel-actions">
+                    <button class="primary-button" type="button" onClick={() => approve(props.pane)}>Download and run</button>
+                    <button class="secondary-button" type="button" onClick={() => stop(props.pane)}>Not now</button>
+                  </div>
+                </section>
+              )}</Show>
+              <Show when={current().progress !== null && !current().download}>
+                <div class="progress-wrap" role="progressbar" aria-label={`${title} file progress`}
+                  aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(current().progress ?? 0)}>
+                  <div class="progress-track"><span style={{ width: `${current().progress ?? 0}%` }} /></div>
+                  <span>{Math.round(current().progress ?? 0)}%</span>
+                </div>
+              </Show>
+            </>
+          )}</Show>
+          <Show when={notices()[props.pane]}>{(notice) => <p class="notice">{notice()}</p>}</Show>
+        </div>
+
+        <div class="panel-output">
+        <h3 class="output-heading" ref={(element) => { outputHeadings[props.pane] = element; }} tabindex="-1">{title} output</h3>
+        <Show when={result()} fallback={<p class="empty-output">Not run yet.</p>}>
+          {(value) => (
+            <>
+              <p class="output-description">
+                {ENGINE_LABELS[value().engine]} · {resultScope(value())} · {BACKEND_LABELS[value().backend]} · {formatElapsed(value().elapsedMs)}
+                {value().text === value().source ? " · Returned unchanged—not a guarantee of correct grammar." : ""}
+              </p>
+              <div class="output-view-caption">
+                <Show when={value().text !== value().source} fallback={<span>No textual changes.</span>}>
+                  <span class="change-legend"><span class="removed-key">Removed</span><span class="added-key">Added</span></span>
+                </Show>
+              </div>
+              <div class="diff-block" aria-label={`${title} output`}>
+                <For each={diff()}>{(part) => part.kind === "added"
+                  ? <ins>{part.value}</ins>
+                  : part.kind === "removed" ? <del>{part.value}</del> : <span>{part.value}</span>}</For>
+              </div>
+              <Show when={value().findings}>{(findings) => (
+                <details class="findings" open>
+                  <summary>{findings().length} {title} {findings().length === 1 ? "finding" : "findings"} · {findings().filter((finding) => !finding.applied).length} not applied automatically</summary>
+                  <p>Alternatives need a decision. The first suggestion is not always correct, and nothing here chooses for you.</p>
+                  <ol>
+                    <For each={findings()}>{(finding) => (
+                      <li>
+                        <div><strong>{finding.kind}</strong><span>{finding.applied ? "Applied" : "Review"}</span></div>
+                        <p class="finding-source">{finding.problem}</p>
+                        <p>{finding.suggestions.length
+                          ? finding.suggestions.map((suggestion) => suggestion || "(remove)").join(" / ")
+                          : "No automatic replacement offered."}</p>
+                      </li>
+                    )}</For>
+                  </ol>
+                </details>
+              )}</Show>
+              <Show when={value().warnings.length}>
+                <details class="review-notes">
+                  <summary>Automatic review notes ({value().warnings.length})</summary>
+                  <p>These conservative checks can flag harmless corrections. They do not alter or hide the output above.</p>
+                  <ul><For each={value().warnings}>{(warning) => <li>{warning}</li>}</For></ul>
+                </details>
+              </Show>
+            </>
+          )}
+        </Show>
+        </div>
+      </section>
+    );
+  };
 
   return (
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="#composer" aria-label="Local Edit home">
-          <span class="brand-mark" aria-hidden="true">L</span>
-          <span>Local Edit</span>
-        </a>
-        <div class="privacy-pill">
-          <span class="privacy-dot" aria-hidden="true" />
-          Private by design
-        </div>
+        <a class="skip-link" href="#passage">Skip to the passage</a>
+        <span class="wordmark">On-device spelling &amp; grammar</span>
+        <span class="privacy-pill">Your text never leaves this tab</span>
       </header>
+      <main class="comparison-workspace">
+        <header class="comparison-heading">
+          <h1>Spelling and grammar, checked entirely in your browser</h1>
+          <p>Four engines proofread the same passage, and a fifth rewrites it for tone or length. Nothing is uploaded — a Hunspell word list and Harper's rule checks ship with the page and answer instantly, while CoEdIT Base and Qwen 3 are neural models that download into this tab and run on WebGPU. The same job costs half a megabyte at one end and a gigabyte at the other, so run them side by side and see what the extra weight actually buys.</p>
+          <Show when={agentTool()}>
+            <p class="agent-note">This page also registers a WebMCP tool, so an AI agent running inside the browser can call these engines directly and read back their findings.</p>
+          </Show>
+        </header>
 
-      <main class="workspace">
-        <section class="intro" aria-labelledby="page-title">
-          <p class="eyebrow">ON-DEVICE WRITING LAB / 01</p>
-          <div>
-            <h1 id="page-title">Say it better.<br /><span>Keep it yours.</span></h1>
-            <p class="intro-copy">
-              Polish your writing in your browser. Your words stay on this device.
+        <section class="passage-panel" aria-labelledby="passage-title">
+          <div class="passage-intro">
+            <h2 id="passage-title">The passage</h2>
+            <p>Every engine below reads this same text. Editing it clears the results so you are never comparing outputs from different inputs.</p>
+          </div>
+          <div class="sample-row">
+            <p class="sample-heading" id="sample-label">Test cases</p>
+            <div class="sample-chips" role="group" aria-labelledby="sample-label">
+              <For each={SAMPLES}>{(sample) => (
+                <button type="button" class="sample-chip" aria-pressed={activeSample()?.id === sample.id}
+                  disabled={anyBusy()} onClick={() => setPassage(sample.text)}>{sample.label}</button>
+              )}</For>
+            </div>
+            <p class="sample-hint">
+              {activeSample()?.hint ?? "Your own text. Pick a test case above to load a passage built to separate the engines."}
             </p>
           </div>
-        </section>
-
-        <section
-          class="editor-card"
-          id="composer"
-          aria-labelledby="composer-title"
-          aria-busy={busy()}
-        >
-          <div class="card-heading">
-            <div>
-              <p class="section-kicker">COMPOSER</p>
-              <h2 id="composer-title">What do you want to improve?</h2>
-            </div>
-            <span class="word-count">{wordCount()} words</span>
+          <label class="field-label" for="passage">Passage to check</label>
+          <textarea id="passage" value={passage()} spellcheck={false}
+            onInput={(event) => setPassage(event.currentTarget.value)}
+            placeholder="Paste the passage you want to check…" />
+          <div class="comparison-controls">
+            <button
+              class={batchRunning() ? "secondary-button" : "primary-button"}
+              type="button"
+              disabled={batchChecking() || Boolean(batchPlan()) || (!batchRunning() && (!anyInput() || anyBusy()))}
+              onClick={() => { if (batchRunning()) stopAll(); else void runAll(); }}
+            >{batchRunning() ? "Stop all" : batchChecking() ? "Checking cache…" : "Run all five"}</button>
+            <button class="text-button" type="button" disabled={!passage() || anyBusy()}
+              onClick={() => setPassage("")}>Clear passage</button>
+            <span class="resource-note">The dictionary and Harper run right away; the AI engines run one at a time to limit memory. Finished outputs stay visible.</span>
           </div>
-
-          <div class="editor-layout">
-            <div class="draft-column">
-              <label class="sr-only" for="draft">Text to improve</label>
-              <p class="input-guidance" id="draft-guidance">
-                Longer passages are edited section by section. Review every suggestion before replacing your text.
-              </p>
-              <textarea
-                ref={textarea}
-                id="draft"
-                value={text()}
-                onInput={(event) => handleTextInput(event.currentTarget.value)}
-                aria-describedby="draft-guidance draft-limit"
-                placeholder="Type or paste the text you want to improve…"
-              />
-
-              <div class="editor-footer">
-                <span
-                  id="draft-limit"
-                  aria-live="polite"
-                >
-                  {text().length.toLocaleString("en-US")} characters
-                </span>
-                <Show
-                  when={busy()}
-                  fallback={
-                    <button class="clear-button" type="button" onClick={clearText} disabled={!text()}>
-                      Clear
-                    </button>
-                  }
-                >
-                  <button class="stop-button" type="button" onClick={() => stopWork()}>
-                    Stop edit
-                  </button>
+          <Show when={batchPlan()}>{(plan) => (
+            <section class="batch-prompt" aria-label="Run all five download approval">
+              <h2>Approve downloads before running all five</h2>
+              <p>These weights are not cached yet. Approve once and the whole run finishes without stopping to ask again.</p>
+              <ul>
+                <For each={plan()}>{(model) => (
+                  <li>
+                    <strong>{model.spec.label}</strong>
+                    <span>about {formatBytes(model.estimate.bytes)} · {model.spec.license}</span>
+                  </li>
+                )}</For>
+                <Show when={plan().length > 1}>
+                  <li class="batch-total">
+                    <strong>Total</strong>
+                    <span>about {formatBytes(plan().reduce((sum, model) => sum + model.estimate.bytes, 0))}</span>
+                  </li>
                 </Show>
+              </ul>
+              <p class="batch-prompt-note">The exact build depends on your GPU, so the size may vary. Your text stays in this tab; only model files are fetched.</p>
+              <div class="panel-actions">
+                <button class="primary-button" type="button" onClick={confirmBatch}>Download and run all five</button>
+                <button class="secondary-button" type="button" onClick={() => setBatchPlan(null)}>Cancel</button>
               </div>
-            </div>
-
-            <div class="action-block">
-              <p class="action-label">Choose what to change</p>
-              <p class="action-note">Every option also checks spelling and grammar.</p>
-              <div class="action-groups">
-                <fieldset class="action-group">
-                  <legend>Correct</legend>
-                  <button
-                    class="action-button"
-                    classList={{ "is-active": busy() && activeAction() === PROOFREAD_ACTION.id }}
-                    type="button"
-                    disabled={!text().trim() || busy()}
-                    onClick={() =>
-                      void startRewrite(PROOFREAD_ACTION.id, text()).catch(() => undefined)
-                    }
-                  >
-                    {PROOFREAD_ACTION.label}
-                  </button>
-                </fieldset>
-
-                <fieldset class="action-group">
-                  <legend>Make it</legend>
-                  <div class="action-grid">
-                    <For each={LENGTH_ACTIONS}>
-                      {(action) => (
-                        <button
-                          class="action-button"
-                          classList={{ "is-active": busy() && activeAction() === action.id }}
-                          type="button"
-                          disabled={!text().trim() || busy()}
-                          onClick={() =>
-                            void startRewrite(action.id, text()).catch(() => undefined)
-                          }
-                        >
-                          {action.label}
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </fieldset>
-
-                <fieldset class="action-group action-group-wide">
-                  <legend>Make it sound</legend>
-                  <div class="action-grid tone-grid">
-                    <For each={TONE_ACTIONS}>
-                      {(action) => (
-                        <button
-                          class="action-button"
-                          classList={{ "is-active": busy() && activeAction() === action.id }}
-                          type="button"
-                          disabled={!text().trim() || busy()}
-                          onClick={() =>
-                            void startRewrite(action.id, text()).catch(() => undefined)
-                          }
-                        >
-                          {action.label}
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </fieldset>
-              </div>
-            </div>
-          </div>
+            </section>
+          )}</Show>
         </section>
-
-        <aside class="engine-card" aria-labelledby="engine-title">
-          <Show
-            when={result()}
-            fallback={
-              <>
-                <div class="engine-copy">
-                  <div class="engine-title-row">
-                    <div>
-                      <p class="section-kicker">LOCAL ENGINE</p>
-                      <h2 id="engine-title">{engineTitle()}</h2>
-                    </div>
-                    <Show when={backend()}>
-                      {(activeBackend) => (
-                        <span class="backend-badge">{activeBackend().toUpperCase()}</span>
-                      )}
-                    </Show>
-                  </div>
-                  <p>{statusText()}</p>
-                  <Show when={progress() !== null}>
-                    <div
-                      class="progress-wrap"
-                      role="progressbar"
-                      aria-label="Model download progress"
-                      aria-valuemin="0"
-                      aria-valuemax="100"
-                      aria-valuenow={Math.round(progress() ?? 0)}
-                    >
-                      <div class="progress-track">
-                        <span style={{ width: `${progress() ?? 0}%` }} />
-                      </div>
-                      <div class="progress-meta">
-                        <span>{Math.round(progress() ?? 0)}%</span>
-                        <Show when={progressBytes()}>{(bytes) => <span>{bytes()}</span>}</Show>
-                      </div>
-                    </div>
-                  </Show>
-                  <Show when={editingProgress()?.total && editingProgress()!.total > 1}>
-                    <div
-                      class="progress-wrap"
-                      role="progressbar"
-                      aria-label="Text editing progress"
-                      aria-valuemin="0"
-                      aria-valuemax={editingProgress()!.total}
-                      aria-valuenow={editingProgress()!.completed}
-                    >
-                      <div class="progress-track">
-                        <span
-                          style={{
-                            width: `${Math.round(
-                              (editingProgress()!.completed / editingProgress()!.total) * 100,
-                            )}%`,
-                          }}
-                        />
-                      </div>
-                      <div class="progress-meta">
-                        <span>{editingProgress()!.completed} of {editingProgress()!.total}</span>
-                        <span>sections</span>
-                      </div>
-                    </div>
-                  </Show>
-                  <Show when={phase() === "error"}>
-                    <div class="error-note" role="alert">
-                      <span aria-hidden="true">!</span>
-                      <p>{statusText()}</p>
-                    </div>
-                    <Show when={errorDetails()}>
-                      {(details) => (
-                        <details class="error-details">
-                          <summary>Technical details</summary>
-                          <code>{details()}</code>
-                        </details>
-                      )}
-                    </Show>
-                  </Show>
-                </div>
-                <dl class="engine-facts">
-                  <div><dt>Model</dt><dd>Qwen 3 · 0.6B</dd></div>
-                  <div><dt>Acceleration</dt><dd>WebGPU → WASM</dd></div>
-                  <div><dt>Network</dt><dd>Model files only</dd></div>
-                </dl>
-                <div class="engine-visual" classList={{ "is-working": busy() }} aria-hidden="true">
-                  <span>{busy() ? "PROCESSING" : "LOCAL"}</span>
-                  <div class="orbit orbit-one" />
-                  <div class="orbit orbit-two" />
-                  <div class="core">{busy() ? <span class="spinner" /> : "AI"}</div>
-                </div>
-              </>
-            }
-          >
-            {(candidate) => (
-              <section class="result-panel" aria-labelledby="result-title">
-                <div class="result-heading">
-                  <div>
-                    <p class="section-kicker">SUGGESTION / {activeActionLabel().toUpperCase()}</p>
-                    <h2 id="result-title" ref={resultHeading} tabindex="-1">
-                      {hasChanges() ? "Here’s a cleaner version" : "No changes suggested"}
-                    </h2>
-                  </div>
-                  <span class="ready-mark" aria-hidden="true">✓</span>
-                </div>
-
-                <div class="suggestion-text" aria-label="Suggested text">
-                  {candidate().after}
-                </div>
-
-                <Show when={candidate().warnings.length}>
-                  <details class="result-warning">
-                    <summary>
-                      {candidate().warnings.length} section{candidate().warnings.length === 1 ? "" : "s"} need review
-                    </summary>
-                    <ul>
-                      <For each={candidate().warnings}>
-                        {(warning) => <li>{warning}</li>}
-                      </For>
-                    </ul>
-                  </details>
-                </Show>
-
-                <div class="diff-heading">
-                  <h3>Changes</h3>
-                  <div class="diff-legend" aria-hidden="true">
-                    <span class="removed-key">Removed</span>
-                    <span class="added-key">Added</span>
-                  </div>
-                </div>
-                <div class="diff-block" aria-label="Word-level changes">
-                  <Show when={hasChanges()} fallback={<span class="unchanged-note">Your original already fits this edit.</span>}>
-                    <For each={diff()}>
-                      {(part) => (
-                        <Show
-                          when={part.kind !== "same"}
-                          fallback={<span>{part.value}</span>}
-                        >
-                          <Show
-                            when={part.kind === "added"}
-                            fallback={<del title="Removed text">{part.value}</del>}
-                          >
-                            <ins title="Added text">{part.value}</ins>
-                          </Show>
-                        </Show>
-                      )}
-                    </For>
-                  </Show>
-                </div>
-
-                <div class="result-actions">
-                  <button class="primary-button" type="button" onClick={replaceText}>
-                    Replace
-                  </button>
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    onClick={() =>
-                      void startRewrite(
-                        candidate().action,
-                        candidate().before,
-                        candidate().attempt + 1,
-                      ).catch(() => undefined)
-                    }
-                  >
-                    Retry
-                  </button>
-                  <button class="text-button" type="button" onClick={cancelResult}>
-                    Cancel
-                  </button>
-                </div>
-              </section>
-            )}
-          </Show>
-        </aside>
-
-        <p class="sr-only" aria-live="polite">
-          {busy() ? `${activeActionLabel()} is running. ${statusText()}` : statusText()}
-        </p>
+        <div class="comparison-grid"><For each={PANES}>{(pane) => <Panel pane={pane} />}</For></div>
       </main>
-
-      <footer class="site-footer">
-        <span>Runs with Transformers.js</span>
-        <span aria-hidden="true">•</span>
-        <span>No account. No server. No text upload.</span>
-      </footer>
+      <footer class="site-footer">Engine outputs are never merged with each other or written back into your input. Your text stays in this tab; model weights download only after you approve them.</footer>
     </div>
   );
 }

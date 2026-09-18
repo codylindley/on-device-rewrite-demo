@@ -11,12 +11,14 @@
   },
   "include": [
     "../src/lib/diff.ts",
+    "../src/lib/dictionary-spell.ts",
     "../src/lib/edit.ts",
     "../src/lib/generation.ts",
     "../src/lib/output.ts",
     "../src/lib/proofread.ts",
     "../src/lib/prompts.ts",
     "../src/lib/sections.ts",
+    "../src/nspell.d.ts",
     "../src/types.ts",
     "./*.test.ts"
   ]

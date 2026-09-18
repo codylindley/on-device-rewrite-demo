@@ -1,5 +1,5 @@
 {
-  "name": "local-edit-demo",
+  "name": "on-device-spelling-and-grammar",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,14 +8,19 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b --pretty false",
-    "unit-tests": "node tests/run-unit-tests.mjs"
+    "unit-tests": "node tests/run-unit-tests.mjs && node --test benchmarks/score.test.mjs",
+    "browser-tests": "playwright test",
+    "benchmark:grammar": "node scripts/benchmark-grammar.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
+    "dictionary-en": "^4.0.0",
     "harper.js": "2.10.0",
+    "nspell": "^2.1.5",
     "solid-js": "1.9.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "typescript": "7.0.2",
     "vite": "7.3.6",
     "vite-plugin-solid": "2.11.10"

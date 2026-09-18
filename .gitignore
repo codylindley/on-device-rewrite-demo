@@ -6,3 +6,5 @@ dist
 .test-dist
 .DS_Store
 .playwright-mcp
+playwright-report
+test-results

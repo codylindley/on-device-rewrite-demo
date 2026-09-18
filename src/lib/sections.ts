@@ -1,3 +1,5 @@
+import { linkPattern } from "./links.ts";
+
 export const MAX_SECTION_TOKENS = 192;
 
 export interface TextSection {
@@ -7,12 +9,34 @@ export interface TextSection {
 
 type TokenCounter = (text: string) => number;
 
+/** A combining mark, ZWJ emoji, or flag is one character made of several code points; splitting it corrupts it. */
+function graphemes(word: string): string[] {
+  if (typeof Intl.Segmenter !== "function") return Array.from(word);
+  return Array.from(
+    new Intl.Segmenter("en", { granularity: "grapheme" }).segment(word),
+    (part) => part.segment,
+  );
+}
+
 function sentenceSegments(text: string): string[] {
   if (typeof Intl.Segmenter !== "function") return [text];
-  return Array.from(
-    new Intl.Segmenter("en", { granularity: "sentence" }).segment(text),
-    ({ segment }) => segment,
-  );
+  const links = Array.from(text.matchAll(linkPattern), (match) => ({
+    start: match.index, end: match.index + match[0].length,
+  }));
+  const result: string[] = [];
+  let linkIndex = 0;
+  let pending = "";
+  for (const { segment, index } of new Intl.Segmenter("en", { granularity: "sentence" }).segment(text)) {
+    pending += segment;
+    const boundary = index + segment.length;
+    while (links[linkIndex] && links[linkIndex].end <= boundary) linkIndex += 1;
+    // Intl.Segmenter can mistake a URL's "?CapitalizedQuery" for a sentence break.
+    if (links[linkIndex]?.start < boundary && links[linkIndex].end > boundary) continue;
+    result.push(pending);
+    pending = "";
+  }
+  if (pending) result.push(pending);
+  return result;
 }
 
 export function splitIntoSentences(text: string): TextSection[] {
@@ -63,8 +87,13 @@ export function splitIntoSections(
         continue;
       }
 
-      // An unbroken token can still exceed the budget; never split a surrogate pair.
-      const characters = Array.from(word);
+      if (word.match(linkPattern)) {
+        sections.push({ text: word, editable: false });
+        continue;
+      }
+
+      // An unbroken token can still exceed the budget; never split a grapheme cluster.
+      const characters = graphemes(word);
       let offset = 0;
       while (offset < characters.length) {
         let low = 1;
