@@ -472,7 +472,6 @@ test("the page describes itself without product branding and announces the agent
 
   // The WebMCP claim must not be shown in a browser with no agent runtime.
   await expect(page.locator(".agent-note")).toHaveCount(0);
-
   // The skip link is the first tab stop, stays offscreen until focused, and reaches the first input.
   expect(await page.evaluate(() => document.querySelector(".skip-link")!.getBoundingClientRect().bottom <= 0)).toBe(true);
   await page.keyboard.press("Tab");
@@ -529,4 +528,28 @@ test("test cases isolate the boundary each one names, and switching clears stale
   await expect(page.getByRole("button", { name: "Leave this alone" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Misspellings only" })).toHaveAttribute("aria-pressed", "false");
   expect(external).toEqual([]);
+});
+
+test("the footer credits the author and links to the source without losing the page", async ({ page }) => {
+  await page.goto("/");
+  const credit = page.locator(".footer-credit");
+
+  const author = credit.getByRole("link", { name: /Cody Lindley/ });
+  await expect(author).toHaveAttribute("href", "https://codylindley.com");
+
+  const source = credit.getByRole("link", { name: /Source on GitHub/ });
+  await expect(source).toHaveAttribute("href", "https://github.com/codylindley/on-device-rewrite-demo");
+
+  // Weights and results live in this tab, so leaving it to read the source would discard them.
+  for (const link of [author, source]) {
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", /noopener/);
+    await expect(link).toContainText("opens in a new tab");
+  }
+
+  // The separator is decoration, so it must not reach the accessibility tree.
+  await expect(credit.locator("[aria-hidden='true']")).toHaveText("·");
+
+  // A shorthand `margin` on the footer paragraphs silently outranks this, collapsing the separation.
+  expect(await credit.evaluate((element) => getComputedStyle(element).marginTop)).not.toBe("0px");
 });
